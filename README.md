@@ -15,7 +15,7 @@ mit einem Klick installieren, fertig.
 | **Updates** | Verfügbare Updates anzeigen, einzeln, ausgewählt oder alle installieren. Pakete „anheften“ (Update ignorieren) bzw. wieder lösen. |
 | **Installiert** | Alle installierten Programme, filterbar nach Name/ID, mit Details, Aktualisieren und Deinstallieren (mit Rückfrage). |
 | **Suchen** | Neue Pakete in winget und/oder Microsoft Store finden und installieren. Bereits installierte Pakete sind markiert. |
-| **Einstellungen** | Mit Windows starten (optional minimiert), Administrator-Modus (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
+| **Einstellungen** | Mit Windows starten (optional minimiert), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
 | **Protokoll** | Jeder ausgeführte winget-Befehl mit seiner vollständigen Ausgabe. |
 
 Aufträge landen in einer Warteschlange und laufen nacheinander (winget mag
@@ -42,6 +42,7 @@ Fertige EXE-Dateien baut die GitHub-Action `Build` bei jedem Push – unter
 | `--minimized` | Minimiert starten. |
 | `--autostart` | Wird vom Autostart-Eintrag gesetzt; startet minimiert, wenn das in den Einstellungen so gewählt ist. |
 | `--elevated` | Intern: kennzeichnet den mit Adminrechten neu gestarteten Prozess. |
+| `--upgrade=<ID>` | Intern: Update, das nach dem Neustart mit Adminrechten fortgesetzt wird (`*` = alle). |
 
 WPM läuft nur einmal. Ein zweiter Start meldet, dass WPM bereits läuft (beim
 Autostart ohne Meldung).
@@ -59,35 +60,41 @@ Zwei Arten von Fenstern können während Updates aufpoppen:
    Exitcode 1602). Manche MSIX-Pakete brauchen zwingend Adminrechte
    (`0x80073D28`).
 
-Gegen Letzteres hilft der **Administrator-Modus** (Einstellungen → Allgemein →
-„Mit Administratorrechten ausführen“): WPM startet sich mit Adminrechten neu,
-Windows fragt also **einmal beim Start** statt bei jedem Installer. Alternativ
-gibt es in der Statusleiste und bei passenden Fehlermeldungen den Knopf
-„Als Administrator neu starten“.
+Gegen Letzteres hilft **„Updates mit Administratorrechten installieren“**
+(Einstellungen → Allgemein): Klickt man auf „Aktualisieren“, „Auswahl
+aktualisieren“ oder „Alle aktualisieren“, startet WPM sich **einmal** mit
+Adminrechten neu (eine Windows-Bestätigung) und setzt genau diese Updates
+automatisch fort. Danach fragt kein Installer mehr einzeln, bis WPM geschlossen
+wird. Autostart und Update-Suche im Hintergrund laufen weiterhin ganz ohne
+Nachfrage. Lehnt man die Bestätigung ab, laufen die Updates wie bisher ohne
+Adminrechte. Zusätzlich gibt es in der Statusleiste und bei passenden
+Fehlermeldungen „Als Administrator neu starten“ bzw. „Mit Adminrechten erneut
+versuchen“.
 
-Ist zusätzlich „Mit Windows starten“ aktiv, richtet WPM statt des Run-Eintrags
-eine Aufgabe **„WPM Autostart“** in der Aufgabenplanung ein (beim Anmelden, mit
-höchsten Rechten). Dann erscheint auch beim Anmelden keine Nachfrage. Diese
-Aufgabe kann nur mit Adminrechten angelegt werden – WPM macht das automatisch,
-sobald es einmal als Administrator läuft. Voraussetzung: **`wpm.exe` liegt
-unter `C:\Program Files`** (z. B. `C:\Program Files\WPM\wpm.exe`). Liegt sie
-z. B. im Download-Ordner, könnte jedes Programm die Datei austauschen und
-würde beim nächsten Anmelden unbemerkt Adminrechte erhalten. In diesem Fall
-nutzt WPM weiter den Run-Eintrag, und Windows fragt beim Anmelden einmal nach.
-Die Aufgabe lässt sich außerdem nicht manuell (`schtasks /Run`) starten.
+Bewusst **nicht** umgesetzt: ein Autostart, der WPM ohne Nachfrage mit
+Adminrechten startet (z. B. über die Aufgabenplanung). WPM startet winget über
+den App-Alias im Benutzerprofil; jedes Programm des Benutzers könnte diesen
+austauschen und hätte dann unbemerkt Adminrechte. Adminrechte gibt es deshalb
+nur nach einer sichtbaren Windows-Bestätigung – wie bei `winget` in einem
+Administrator-Terminal.
 
-Grenzen des Administrator-Modus:
+Grenzen:
 
-- Der Administrator-Modus ist nur sinnvoll, wenn das eigene Benutzerkonto ein
-  Administratorkonto ist. Gibt man bei der Nachfrage die Zugangsdaten eines
-  *anderen* Kontos ein, läuft WPM unter diesem Konto – mit dessen Einstellungen
-  und benutzerbezogenen Programmen. WPM erkennt das und warnt.
+- Nur sinnvoll, wenn das eigene Benutzerkonto ein Administratorkonto ist. Gibt
+  man bei der Nachfrage die Zugangsdaten eines *anderen* Kontos ein (oder ist
+  der Windows-Administratorschutz aktiv), läuft WPM unter diesem Konto – mit
+  dessen Einstellungen und benutzerbezogenen Programmen. WPM erkennt das und
+  warnt.
 - Manche Installer verweigern Adminrechte (winget-Code `0x8A150056`, z. B.
   Spotify), und benutzerbezogene Programme lassen sich mit Adminrechten nicht
-  deinstallieren (`0x8A15007D`). Dafür WPM ohne Administrator-Modus starten.
+  deinstallieren (`0x8A15007D`). Dafür WPM schließen und normal neu starten.
 - Fenster, die keine UAC-Nachfragen sind (Treiber-Vertrauensabfragen,
   Installer, die `--silent` ignorieren, Programme, die nach dem Update neu
-  starten), verhindert auch der Administrator-Modus nicht.
+  starten), verhindern auch Adminrechte nicht.
+- Am besten liegt `wpm.exe` unter `C:\Program Files\WPM`. In beschreibbaren
+  Ordnern wie „Downloads“ könnten fremde DLLs neben der EXE mit
+  Adminrechten mitgeladen werden (der MSVC-Build aus der GitHub-Action ist
+  dagegen gehärtet, siehe `.cargo/config.toml`).
 
 **Update installiert, aber weiter in der Liste?** Bei MSIX-Paketen (z. B.
 Claude) meldet winget Erfolg, aktiviert die neue Version aber erst, wenn die
@@ -146,9 +153,9 @@ src/
 └── system.rs          Autostart, Adminrechte, Einzelinstanz, Benachrichtigungen
 ```
 
-Autostart schreibt normalerweise den Eintrag `WPM` unter
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (keine Adminrechte nötig),
-im Administrator-Modus stattdessen die Aufgabe „WPM Autostart“.
+Autostart schreibt den Eintrag `WPM` unter
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run` (keine Adminrechte nötig,
+keine Nachfrage beim Anmelden).
 
 ## Gut zu wissen
 
@@ -160,12 +167,12 @@ im Administrator-Modus stattdessen die Aufgabe „WPM Autostart“.
   und hängt „…“ an. Für solche IDs sucht WPM ohne `--exact` nach dem Anfang
   der ID; ist das nicht eindeutig, meldet winget das.
 - **Adminrechte:** WPM selbst braucht keine. Gegen einzelne UAC-Nachfragen
-  der Installer hilft der Administrator-Modus (siehe oben).
-- **Sicherheit:** `winget.exe` und `schtasks.exe` werden über ihren vollen
-  Pfad gestartet, damit nie eine gleichnamige Datei aus dem Programmordner
-  (z. B. dem Download-Ordner) mit Adminrechten läuft. Die XML-Datei für die
-  Aufgabenplanung entsteht in `C:\ProgramData`, wo normale Programme sie
-  nicht verändern können.
+  der Installer hilft „Updates mit Administratorrechten installieren“ (siehe
+  oben).
+- **Sicherheit:** `winget.exe` wird über seinen vollen Pfad gestartet (App-Alias
+  bzw. `PATH` ohne Programmordner und aktuelles Verzeichnis), damit nie eine
+  gleichnamige Datei aus dem Programmordner (z. B. dem Download-Ordner) mit
+  Adminrechten läuft. Nachgeladene DLLs kommen nur aus `System32`.
 - **Hintergrundprüfung** läuft, solange WPM geöffnet ist (auch minimiert).
   Ein Symbol im Infobereich (Tray) gibt es noch nicht.
 

@@ -494,11 +494,11 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
         PACKAGE_IS_PINNED => "das Paket ist angeheftet",
         INSTALLER_PROHIBITS_ELEVATION => {
             "der Installer lässt sich nicht mit Administratorrechten ausführen – \
-             WPM ohne Administrator-Modus starten und erneut versuchen"
+             WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen"
         }
         ADMIN_CONTEXT_ACTION_PROHIBITED => {
             "mit Administratorrechten nicht erlaubt (benutzerbezogenes Programm) – \
-             WPM ohne Administrator-Modus starten und erneut versuchen"
+             WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen"
         }
         _ => return None,
     })
@@ -631,7 +631,7 @@ mod tests {
         };
         let failure = Failure::from_output(&prohibited);
         assert!(!failure.needs_admin, "Fehler entsteht durch Adminrechte");
-        assert!(failure.summary.contains("ohne Administrator-Modus"));
+        assert!(failure.summary.contains("ohne Adminrechte"));
 
         let declined = CommandOutput {
             lines: vec!["Installation abgebrochen".into()],

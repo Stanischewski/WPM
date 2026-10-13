@@ -21,6 +21,8 @@ use settings::Settings;
 const ELEVATED_FLAG: &str = "--elevated";
 /// Konto, das den Neustart angestoßen hat (zum Erkennen fremder Admin-Konten).
 const USER_SID_FLAG: &str = "--user-sid=";
+/// Paket, dessen Update nach dem Neustart mit Adminrechten fortgesetzt wird.
+const UPGRADE_FLAG: &str = "--upgrade=";
 
 fn main() -> eframe::Result {
     system::harden_dll_search();
@@ -33,9 +35,7 @@ fn main() -> eframe::Result {
     let relaunched = has(ELEVATED_FLAG);
 
     // Nur eine Instanz: Autostart und manueller Start sollen sich nicht doppeln.
-    // Das wird *vor* einem Neustart mit Adminrechten geprüft, damit ein zweiter
-    // Start keine überflüssige Windows-Bestätigung zeigt. Der mit Adminrechten
-    // neu gestartete Prozess wartet kurz, bis die alte Instanz beendet ist.
+    // Nach einem Neustart mit Adminrechten kurz warten, bis die alte Instanz zu ist.
     let _instance = if demo {
         None
     } else {
@@ -58,22 +58,9 @@ fn main() -> eframe::Result {
         }
     };
 
-    // Administrator-Modus: vor dem ersten Fenster mit Adminrechten neu starten.
-    // Lehnt man die Windows-Bestätigung ab, läuft WPM normal weiter. Bei Erfolg
-    // endet dieser Prozess sofort und gibt damit die Einzelinstanz frei.
-    let elevated = system::is_elevated();
-    let mut elevation_declined = false;
-    if settings.run_as_admin && !elevated && !relaunched && system::ELEVATION_SUPPORTED {
-        let mut elevated_args = args.clone();
-        elevated_args.extend(relaunch_flags());
-        match system::relaunch_elevated(&elevated_args, None) {
-            Ok(()) => return Ok(()),
-            Err(_) => elevation_declined = true,
-        }
-    }
-
-    // Gibt ein Standardbenutzer bei der Nachfrage die Zugangsdaten eines
-    // anderen Kontos ein, läuft WPM unter diesem Konto.
+    // Läuft WPM nach dem Neustart unter einem anderen Konto als vorher? Das
+    // passiert, wenn bei der Nachfrage andere Zugangsdaten eingegeben werden
+    // oder der Windows-Administratorschutz ein eigenes Admin-Konto verwendet.
     let other_account = args
         .iter()
         .find_map(|a| a.strip_prefix(USER_SID_FLAG))
@@ -82,9 +69,13 @@ fn main() -> eframe::Result {
     let flags = StartupFlags {
         demo,
         minimized: has("--minimized") || (autostart && settings.start_minimized),
-        elevated,
-        elevation_declined,
+        elevated: system::is_elevated(),
         other_account,
+        resume_upgrades: args
+            .iter()
+            .filter_map(|a| a.strip_prefix(UPGRADE_FLAG))
+            .map(str::to_string)
+            .collect(),
     };
 
     let options = eframe::NativeOptions {
@@ -103,11 +94,16 @@ fn main() -> eframe::Result {
     )
 }
 
-/// Zusätzliche Argumente für den Neustart mit Adminrechten.
-pub fn relaunch_flags() -> Vec<String> {
-    let mut flags = vec![ELEVATED_FLAG.to_string()];
+/// Argumente für den Neustart mit Adminrechten, der die Updates der
+/// angegebenen Pakete fortsetzt.
+pub fn relaunch_args(demo: bool, upgrade_ids: &[String]) -> Vec<String> {
+    let mut args = vec![ELEVATED_FLAG.to_string()];
     if let Some(sid) = system::user_sid() {
-        flags.push(format!("{USER_SID_FLAG}{sid}"));
+        args.push(format!("{USER_SID_FLAG}{sid}"));
     }
-    flags
+    if demo {
+        args.push("--demo".into());
+    }
+    args.extend(upgrade_ids.iter().map(|id| format!("{UPGRADE_FLAG}{id}")));
+    args
 }

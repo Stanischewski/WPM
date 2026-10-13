@@ -1,5 +1,8 @@
 //! Windows-spezifisches: Autostart, Administratorrechte, Einzelinstanz und
 //! Benachrichtigungen. Auf anderen Systemen (nur Entwicklung/Demo) Platzhalter.
+//!
+//! Adminrechte gibt es nur über eine sichtbare Windows-Bestätigung (UAC) –
+//! bewusst keinen Weg, WPM ohne Nachfrage erhöht zu starten.
 
 use std::io;
 
@@ -12,11 +15,9 @@ pub use imp::SingleInstance;
 mod imp {
     use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::io::{self, Write};
+    use std::io;
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
-    use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Stdio};
     use std::ptr;
     use std::thread;
     use std::time::{Duration, Instant};
@@ -37,9 +38,8 @@ mod imp {
         CreateMutexW, GetCurrentProcess, OpenProcessToken,
     };
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_LocalAppData, FOLDERID_ProgramData, FOLDERID_ProgramFiles,
-        FOLDERID_ProgramFilesX86, FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
-        ShellExecuteW,
+        FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT,
+        SHGetKnownFolderPath, ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL,
@@ -48,10 +48,8 @@ mod imp {
     use winreg::RegKey;
     use winreg::enums::HKEY_CURRENT_USER;
 
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN_VALUE: &str = "WPM";
-    const TASK_NAME: &str = "WPM Autostart";
     const MUTEX_NAME: &str = r"Local\WPM-SingleInstance";
 
     fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
@@ -249,8 +247,6 @@ mod imp {
         }
     }
 
-    // --- Autostart über die Aufgabenplanung (mit höchsten Rechten) ---
-
     /// Pfad eines Systemordners (Known Folder), unabhängig von Umgebungsvariablen.
     fn known_folder(id: &GUID) -> Option<PathBuf> {
         let mut raw: *mut u16 = ptr::null_mut();
@@ -277,54 +273,8 @@ mod imp {
         unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) };
     }
 
-    /// `schtasks.exe` aus System32 – nie eine gleichnamige Datei aus dem Programmordner.
-    fn schtasks_path() -> io::Result<PathBuf> {
-        known_folder(&FOLDERID_System)
-            .map(|dir| dir.join("schtasks.exe"))
-            .ok_or_else(|| io::Error::other("Systemordner nicht gefunden"))
-    }
-
-    /// Führt schtasks aus; mit `/HRESULT` ist der Exitcode ein HRESULT.
-    fn schtasks(args: &[&OsStr]) -> io::Result<Result<(), u32>> {
-        let output = Command::new(schtasks_path()?)
-            .args(args)
-            .arg("/HRESULT")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .status()?;
-        Ok(match output.code() {
-            Some(0) => Ok(()),
-            Some(code) => Err(code as u32),
-            None => Err(u32::MAX),
-        })
-    }
-
-    fn schtasks_error(action: &str, code: u32) -> io::Error {
-        let reason = match code {
-            0x8007_0005 => {
-                " – Zugriff verweigert, dafür sind Administratorrechte nötig".to_string()
-            }
-            _ => format!(" (Fehler 0x{code:08X})"),
-        };
-        io::Error::other(format!("Aufgabenplanung: {action} fehlgeschlagen{reason}"))
-    }
-
-    /// `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`: Aufgabe gibt es nicht.
-    const TASK_NOT_FOUND: u32 = 0x8007_0002;
-
-    pub fn task_exists() -> io::Result<bool> {
-        match schtasks(&["/Query".as_ref(), "/TN".as_ref(), TASK_NAME.as_ref()])? {
-            Ok(()) => Ok(true),
-            Err(TASK_NOT_FOUND) => Ok(false),
-            Err(code) => Err(schtasks_error("Abfrage", code)),
-        }
-    }
-
-    /// Die Aufgabe startet WPM ohne Nachfrage mit Adminrechten. Das ist nur
-    /// vertretbar, wenn normale Programme die EXE nicht austauschen können –
-    /// also wenn sie unter „Programme“ liegt.
+    /// Liegt wpm.exe unter „Programme“, wo normale Programme weder die EXE
+    /// noch DLLs daneben austauschen können?
     pub fn exe_in_protected_folder() -> bool {
         let Ok(exe) = std::env::current_exe().and_then(fs::canonicalize) else {
             return false;
@@ -336,67 +286,6 @@ mod imp {
             .filter_map(|dir| fs::canonicalize(dir).ok())
             .map(|dir| PathBuf::from(dir.as_os_str().to_string_lossy().to_lowercase()))
             .any(|dir| exe.starts_with(dir))
-    }
-
-    pub fn create_task() -> io::Result<()> {
-        if !exe_in_protected_folder() {
-            return Err(io::Error::other(
-                "Autostart ohne Nachfrage ist nur möglich, wenn wpm.exe unter „Programme“ liegt.",
-            ));
-        }
-        let exe = std::env::current_exe()?;
-        let directory = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-        // Nur die SID aus dem eigenen Zugriffstoken – Umgebungsvariablen sind
-        // veränderbar und bei Entra-ID-Konten nicht eindeutig.
-        let user = current_user_sid()
-            .ok_or_else(|| io::Error::other("Benutzerkonto nicht ermittelbar"))?;
-        let xml = super::task_xml(
-            &user,
-            &exe.display().to_string(),
-            "--autostart",
-            &directory.display().to_string(),
-        );
-        let mut bytes = vec![0xFF, 0xFE];
-        bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
-
-        // Die Datei liegt direkt in ProgramData: Dort dürfen normale Programme
-        // von Administratoren angelegte Dateien weder ändern noch löschen.
-        // `create_new` verhindert, dass eine vorab angelegte Datei benutzt wird.
-        let folder = known_folder(&FOLDERID_ProgramData)
-            .ok_or_else(|| io::Error::other("ProgramData nicht gefunden"))?;
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.subsec_nanos())
-            .unwrap_or_default();
-        let path = folder.join(format!("wpm-autostart-{}-{nanos}.xml", std::process::id()));
-        fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)?
-            .write_all(&bytes)?;
-        let result = schtasks(&[
-            "/Create".as_ref(),
-            "/TN".as_ref(),
-            TASK_NAME.as_ref(),
-            "/XML".as_ref(),
-            path.as_os_str(),
-            "/F".as_ref(),
-        ]);
-        let _ = fs::remove_file(&path);
-        result?.map_err(|code| schtasks_error("Einrichten", code))
-    }
-
-    pub fn delete_task() -> io::Result<()> {
-        if !task_exists()? {
-            return Ok(());
-        }
-        schtasks(&[
-            "/Delete".as_ref(),
-            "/TN".as_ref(),
-            TASK_NAME.as_ref(),
-            "/F".as_ref(),
-        ])?
-        .map_err(|code| schtasks_error("Entfernen", code))
     }
 }
 
@@ -445,10 +334,6 @@ mod imp {
         Ok(())
     }
 
-    pub fn task_exists() -> io::Result<bool> {
-        Ok(false)
-    }
-
     pub fn exe_in_protected_folder() -> bool {
         false
     }
@@ -458,14 +343,6 @@ mod imp {
     }
 
     pub fn harden_dll_search() {}
-
-    pub fn create_task() -> io::Result<()> {
-        Err(unsupported())
-    }
-
-    pub fn delete_task() -> io::Result<()> {
-        Ok(())
-    }
 }
 
 /// Läuft WPM mit Administratorrechten? (Ändert sich zur Laufzeit nicht.)
@@ -514,44 +391,27 @@ pub fn notify(title: &str, body: &str) {
     imp::notify(title, body);
 }
 
-/// Ist ein Autostart eingetragen (Run-Schlüssel oder Aufgabenplanung)?
+/// Ist der Autostart (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`) eingetragen?
 pub fn autostart_enabled() -> bool {
-    imp::run_entry_exists() || imp::task_exists().unwrap_or(false)
+    imp::run_entry_exists()
 }
 
-/// Darf der Autostart mit Adminrechten (ohne Nachfrage) eingerichtet werden?
-/// Nur wenn wpm.exe in einem Ordner liegt, den normale Programme nicht
-/// verändern können – sonst ließe sich darüber Adminrechte erschleichen.
-pub fn elevated_autostart_allowed() -> bool {
-    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ALLOWED.get_or_init(imp::exe_in_protected_folder)
-}
-
-/// Richtet den Autostart ein oder entfernt ihn. Vorhandene Einträge werden
-/// mit dem aktuellen Programmpfad überschrieben.
-///
-/// Mit `elevated_task` startet WPM über die Aufgabenplanung mit höchsten
-/// Rechten – ohne Windows-Bestätigung beim Anmelden. Das Einrichten selbst
-/// braucht Adminrechte. Sonst dient `HKCU\…\Run` (ohne Adminrechte).
-pub fn configure_autostart(enabled: bool, elevated_task: bool) -> io::Result<()> {
-    if enabled && elevated_task {
-        imp::create_task()?;
-        imp::remove_run_entry()
-    } else if enabled {
-        imp::set_run_entry()?;
-        imp::delete_task().map_err(|e| {
-            io::Error::new(
-                e.kind(),
-                format!(
-                    "Die Autostart-Aufgabe mit Adminrechten ließ sich nicht entfernen ({e}). \
-                     WPM als Administrator starten und erneut versuchen."
-                ),
-            )
-        })
+/// Trägt WPM in den Run-Schlüssel ein bzw. entfernt den Eintrag. WPM startet
+/// dort immer ohne Adminrechte und damit ohne Windows-Bestätigung; ein
+/// vorhandener Eintrag wird mit dem aktuellen Programmpfad erneuert.
+pub fn set_autostart(enabled: bool) -> io::Result<()> {
+    if enabled {
+        imp::set_run_entry()
     } else {
-        imp::remove_run_entry()?;
-        imp::delete_task()
+        imp::remove_run_entry()
     }
+}
+
+/// Liegt wpm.exe unter „Programme“? Mit Adminrechten aus einem beschreibbaren
+/// Ordner (z. B. Downloads) könnten dort abgelegte fremde DLLs mitgeladen werden.
+pub fn exe_in_protected_folder() -> bool {
+    static PROTECTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *PROTECTED.get_or_init(imp::exe_in_protected_folder)
 }
 
 /// Setzt Argumente nach den Windows-Regeln (CommandLineToArgvW) zusammen.
@@ -591,69 +451,6 @@ fn quote_arg(arg: &str) -> String {
     quoted
 }
 
-fn xml_escape(text: &str) -> String {
-    text.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&apos;")
-}
-
-/// Aufgabe für die Aufgabenplanung: beim Anmelden des Benutzers mit höchsten
-/// Rechten starten, auch im Akkubetrieb, ohne Zeitlimit, mit normaler
-/// Priorität (4). Manuelles Starten (`schtasks /Run`) ist gesperrt, damit
-/// andere Programme WPM nicht ohne Nachfrage mit Adminrechten starten können.
-#[cfg_attr(not(windows), allow(dead_code))]
-fn task_xml(user: &str, command: &str, arguments: &str, directory: &str) -> String {
-    let (user, command, arguments, directory) = (
-        xml_escape(user),
-        xml_escape(command),
-        xml_escape(arguments),
-        xml_escape(directory),
-    );
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo>
-    <Description>Startet WPM beim Anmelden mit Administratorrechten, ohne nachzufragen.</Description>
-  </RegistrationInfo>
-  <Triggers>
-    <LogonTrigger>
-      <Enabled>true</Enabled>
-      <UserId>{user}</UserId>
-      <Delay>PT15S</Delay>
-    </LogonTrigger>
-  </Triggers>
-  <Principals>
-    <Principal id="Author">
-      <UserId>{user}</UserId>
-      <LogonType>InteractiveToken</LogonType>
-      <RunLevel>HighestAvailable</RunLevel>
-    </Principal>
-  </Principals>
-  <Settings>
-    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
-    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
-    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
-    <AllowHardTerminate>true</AllowHardTerminate>
-    <StartWhenAvailable>false</StartWhenAvailable>
-    <AllowStartOnDemand>false</AllowStartOnDemand>
-    <Enabled>true</Enabled>
-    <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>4</Priority>
-  </Settings>
-  <Actions Context="Author">
-    <Exec>
-      <Command>{command}</Command>
-      <Arguments>{arguments}</Arguments>
-      <WorkingDirectory>{directory}</WorkingDirectory>
-    </Exec>
-  </Actions>
-</Task>
-"#
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -668,19 +465,5 @@ mod tests {
         assert_eq!(quote_arg(r"C:\Program Files\"), r#""C:\Program Files\\""#);
         assert_eq!(quote_arg(r#"a "b" c"#), r#""a \"b\" c""#);
         assert_eq!(quote_arg(r"a\\b c"), r#""a\\b c""#);
-    }
-
-    #[test]
-    fn task_xml_escapes_values() {
-        let xml = task_xml(
-            r"PC\Anna & Ben",
-            r"C:\Apps & Tools\wpm.exe",
-            "--autostart",
-            r"C:\Apps & Tools",
-        );
-        assert!(xml.contains(r"<UserId>PC\Anna &amp; Ben</UserId>"));
-        assert!(xml.contains(r"<Command>C:\Apps &amp; Tools\wpm.exe</Command>"));
-        assert!(xml.contains("<RunLevel>HighestAvailable</RunLevel>"));
-        assert!(!xml.contains("{user}"));
     }
 }

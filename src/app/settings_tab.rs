@@ -61,26 +61,25 @@ impl WpmApp {
 
                 ui.add_space(4.0);
                 ui.add_enabled_ui(system::ELEVATION_SUPPORTED, |ui| {
-                    ui.checkbox(&mut settings.run_as_admin, "Mit Administratorrechten ausführen");
+                    ui.checkbox(
+                        &mut settings.run_as_admin,
+                        "Updates mit Administratorrechten installieren",
+                    );
                     ui.indent("admin_options", |ui| {
                         hint(
                             ui,
-                            "Windows fragt dann einmal beim Start von WPM nach – statt bei jedem \
-                             einzelnen Installer. Zusammen mit „Mit Windows starten“ richtet WPM \
-                             eine Aufgabe in der Aufgabenplanung ein, sodass auch beim Anmelden \
-                             keine Nachfrage erscheint. Nur sinnvoll, wenn dein Benutzerkonto \
-                             ein Administratorkonto ist.",
+                            "Vor dem ersten Update startet WPM sich einmal mit Administratorrechten \
+                             neu und setzt die Updates automatisch fort. Windows fragt dann einmal \
+                             statt bei jedem einzelnen Installer. Autostart und Update-Suche \
+                             laufen weiterhin ohne Nachfrage. Nur sinnvoll, wenn dein \
+                             Benutzerkonto ein Administratorkonto ist.",
                         );
-                        if settings.run_as_admin
-                            && settings.autostart
-                            && !system::elevated_autostart_allowed()
-                        {
+                        if settings.run_as_admin && !system::exe_in_protected_folder() {
                             hint(
                                 ui,
-                                "Hinweis: Ohne Nachfrage beim Anmelden geht es nur, wenn wpm.exe \
-                                 unter „C:\\Program Files“ liegt (z. B. C:\\Program Files\\WPM). \
-                                 Sonst könnten andere Programme die Datei austauschen und so \
-                                 Adminrechte erhalten. Bis dahin fragt Windows beim Anmelden nach.",
+                                "Tipp: wpm.exe am besten unter „C:\\Program Files\\WPM“ ablegen. \
+                                 In beschreibbaren Ordnern wie „Downloads“ könnten fremde Dateien \
+                                 neben wpm.exe mit Administratorrechten mitgeladen werden.",
                             );
                         }
                         ui.horizontal(|ui| {
@@ -174,7 +173,7 @@ impl WpmApp {
                     ui,
                     "Im Modus „Still“ erscheinen kaum Installer-Fenster. Einzelne Installer zeigen \
                      trotzdem ein Fenster oder starten das Programm nach dem Update neu. \
-                     Windows-Bestätigungen (UAC) vermeidet nur der Administrator-Modus.",
+                     Windows-Bestätigungen (UAC) vermeidet „Updates mit Administratorrechten installieren“.",
                 );
                 hint(
                     ui,
@@ -290,7 +289,7 @@ impl WpmApp {
         }
         if restart {
             let ctx = ui.ctx().clone();
-            self.restart_elevated(&ctx);
+            self.restart_elevated(&ctx, &[]);
         }
     }
 }
