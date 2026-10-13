@@ -15,12 +15,39 @@ mit einem Klick installieren, fertig.
 | **Updates** | Verfügbare Updates anzeigen, einzeln, ausgewählt oder alle installieren. Pakete „anheften“ (Update ignorieren) bzw. wieder lösen. |
 | **Installiert** | Alle installierten Programme, filterbar nach Name/ID, mit Details, Aktualisieren und Deinstallieren (mit Rückfrage). |
 | **Suchen** | Neue Pakete in winget und/oder Microsoft Store finden und installieren. Bereits installierte Pakete sind markiert. |
-| **Einstellungen** | Mit Windows starten (optional minimiert), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
+| **Einstellungen** | Mit Windows starten (optional unsichtbar im Infobereich), Symbol im Infobereich und Weiterlaufen im Hintergrund (siehe unten), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
 | **Protokoll** | Jeder ausgeführte winget-Befehl mit seiner vollständigen Ausgabe. |
 
 Aufträge landen in einer Warteschlange und laufen nacheinander (winget mag
 keine parallelen Installationen). Die Statusleiste zeigt den Fortschritt live,
-laufende Vorgänge lassen sich abbrechen.
+laufende Vorgänge lassen sich abbrechen – „Abbrechen“ beendet dabei auch einen
+hängenden Installer, den winget gestartet hat (außer Installern, die per
+Windows-Bestätigung mit Adminrechten laufen). Kommt von einem Installer drei
+Minuten lang keine Rückmeldung, weist die Statusleiste darauf hin: Meist wartet
+dann ein eigenes Installer- oder Konsolenfenster auf eine Eingabe.
+
+## Infobereich und Hintergrund
+
+Beides lässt sich unter *Einstellungen → Allgemein* ein- und ausschalten
+(Standard: an).
+
+- **Symbol im Infobereich anzeigen** – das WPM-Symbol unten rechts neben der
+  Uhr (evtl. hinter „^“). Ein orangefarbener Punkt zeigt verfügbare Updates,
+  der Tooltip den aktuellen Stand. Klick öffnet WPM, Rechtsklick zeigt das Menü
+  *WPM öffnen*, *Nach Updates suchen* und *Beenden*.
+- **Beim Schließen im Hintergrund weiterlaufen** – das Fenster-✕ versteckt WPM
+  nur. Die regelmäßige Update-Suche läuft weiter und meldet neue Updates per
+  Windows-Benachrichtigung; Installationen laufen zu Ende, danach gibt es eine
+  Benachrichtigung mit dem Ergebnis. Beendet wird WPM über *Beenden* im Menü
+  des Symbols.
+- **Mit Windows starten → Im Hintergrund starten** – mit Symbol im
+  Infobereich startet WPM nach der Anmeldung unsichtbar, sonst minimiert in der
+  Taskleiste.
+- Wird WPM erneut gestartet (Startmenü, Verknüpfung), öffnet sich das Fenster
+  der bereits laufenden Instanz.
+- Mit Administratorrechten bleibt WPM nicht dauerhaft im Hintergrund: Beim
+  Schließen läuft es noch zu Ende, was gerade installiert wird, und übergibt
+  dann an eine neu gestartete Instanz **ohne** Adminrechte im Infobereich.
 
 ## Starten
 
@@ -42,10 +69,11 @@ Fertige EXE-Dateien baut die GitHub-Action `Build` bei jedem Push – unter
 | `--minimized` | Minimiert starten. |
 | `--autostart` | Wird vom Autostart-Eintrag gesetzt; startet minimiert, wenn das in den Einstellungen so gewählt ist. |
 | `--elevated` | Intern: kennzeichnet den mit Adminrechten neu gestarteten Prozess. |
+| `--background` | Intern: unsichtbar im Infobereich starten (nach dem Schließen der Instanz mit Adminrechten). |
 | `--upgrade=<ID>` | Intern: Update, das nach dem Neustart mit Adminrechten fortgesetzt wird (`*` = alle). |
 
-WPM läuft nur einmal. Ein zweiter Start meldet, dass WPM bereits läuft (beim
-Autostart ohne Meldung).
+WPM läuft nur einmal. Ein zweiter Start holt das Fenster der laufenden Instanz
+nach vorn (beim Autostart passiert nichts).
 
 ## Weniger Nachfragen beim Aktualisieren
 
@@ -104,6 +132,13 @@ neu installieren oder anheften). Nennt winget ein Installationsprotokoll, gibt
 es den Knopf „Protokoll öffnen“, bei nicht passenden Updates „Anheften“. Die
 vollständige Ausgabe von winget steht unter „Details“.
 
+**Update hängt?** Manche Installer öffnen trotz „Still“ ein eigenes Fenster
+und warten dort – z. B. `rustup-init` (Paket `Rustlang.Rustup`), wenn noch
+Rust-Programme wie `cargo` oder `rust-analyzer` laufen und Dateien gesperrt
+sind. Dann das Fenster in der Taskleiste suchen, die Programme schließen oder in
+WPM „Abbrechen“. Programme, die sich selbst aktualisieren (wie Rustup über
+`rustup self update`), heftet man am besten an.
+
 **Update installiert, aber weiter in der Liste?** Bei MSIX-Paketen (z. B.
 Claude) meldet winget Erfolg, aktiviert die neue Version aber erst, wenn die
 Anwendung beendet ist. WPM erkennt das und weist darauf hin. Bleibt das Update
@@ -158,6 +193,7 @@ src/
 ├── worker.rs          Warteschlange im Hintergrund-Thread
 ├── scheduler.rs       regelmäßige Update-Prüfung
 ├── settings.rs        Einstellungen (%APPDATA%\WPM\settings.json)
+├── tray.rs            Symbol im Infobereich
 └── system.rs          Autostart, Adminrechte, Einzelinstanz, Benachrichtigungen
 ```
 
@@ -181,12 +217,11 @@ keine Nachfrage beim Anmelden).
   bzw. `PATH` ohne Programmordner und aktuelles Verzeichnis), damit nie eine
   gleichnamige Datei aus dem Programmordner (z. B. dem Download-Ordner) mit
   Adminrechten läuft. Nachgeladene DLLs kommen nur aus `System32`.
-- **Hintergrundprüfung** läuft, solange WPM geöffnet ist (auch minimiert).
-  Ein Symbol im Infobereich (Tray) gibt es noch nicht.
+- **Hintergrundprüfung** läuft, solange WPM läuft – auch minimiert oder
+  versteckt im Infobereich.
 
 ## Mögliche nächste Schritte
 
-- Tray-Symbol, damit WPM beim Schließen im Hintergrund weiterläuft
 - statt Text-Parsing die WinGet-COM-API (`Microsoft.Management.Deployment`)
   oder das PowerShell-Modul `Microsoft.WinGet.Client` nutzen
 - weitere Paketmanager wie Scoop oder Chocolatey

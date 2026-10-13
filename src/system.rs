@@ -24,24 +24,34 @@ mod imp {
 
     use windows_sys::Win32::Foundation::{
         CloseHandle, ERROR_ACCESS_DENIED, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND,
-        LocalFree, SetLastError,
+        LocalFree, SetLastError, WAIT_OBJECT_0,
     };
-    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW,
+        SDDL_REVISION_1,
+    };
     use windows_sys::Win32::Security::{
-        GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
+        AdjustTokenPrivileges, DuplicateTokenEx, GetTokenInformation, LookupPrivilegeValueW,
+        PSECURITY_DESCRIPTOR, SE_INCREASE_QUOTA_NAME, SE_PRIVILEGE_ENABLED, SECURITY_ATTRIBUTES,
+        SecurityImpersonation, TOKEN_ADJUST_DEFAULT, TOKEN_ADJUST_PRIVILEGES,
+        TOKEN_ADJUST_SESSIONID, TOKEN_ASSIGN_PRIMARY, TOKEN_DUPLICATE, TOKEN_ELEVATION,
+        TOKEN_PRIVILEGES, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenPrimary, TokenUser,
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::LibraryLoader::{
         LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateMutexW, GetCurrentProcess, OpenProcessToken,
+        CreateEventW, CreateMutexW, CreateProcessWithTokenW, EVENT_MODIFY_STATE, GetCurrentProcess,
+        INFINITE, OpenEventW, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
+        PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, SetEvent, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::{
         FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT,
         SHGetKnownFolderPath, ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
+        ASFW_ANY, AllowSetForegroundWindow, GetShellWindow, GetWindowThreadProcessId,
         MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL,
     };
     use windows_sys::core::GUID;
@@ -51,6 +61,11 @@ mod imp {
     const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const RUN_VALUE: &str = "WPM";
     const MUTEX_NAME: &str = r"Local\WPM-SingleInstance";
+    /// Ereignis, mit dem ein zweiter Start das Fenster der laufenden Instanz öffnet.
+    const SHOW_EVENT_NAME: &str = r"Local\WPM-Show";
+    /// Zugriff auf das Ereignis: System und Administratoren voll, angemeldete
+    /// Benutzer dürfen es nur auslösen – auch wenn WPM mit Adminrechten läuft.
+    const SHOW_EVENT_SDDL: &str = "D:(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00100002;;;IU)";
 
     fn wide(text: impl AsRef<OsStr>) -> Vec<u16> {
         text.as_ref().encode_wide().chain(Some(0)).collect()
@@ -151,6 +166,192 @@ mod imp {
             Ok(())
         } else {
             Err(io::Error::last_os_error())
+        }
+    }
+
+    /// Startet WPM ohne Adminrechte: mit dem Zugriffstoken der Windows-Shell
+    /// (Explorer), unter dem auch ein normaler Programmstart liefe.
+    pub fn launch_unelevated(args: &[String]) -> io::Result<()> {
+        let exe = std::env::current_exe()?;
+        let directory = exe.parent().map(Path::as_os_str).unwrap_or_default();
+        let token = shell_token()?;
+        let application = wide(&exe);
+        let mut command_line = wide(format!(
+            "{} {}",
+            super::quote_arg(&exe.to_string_lossy()),
+            super::join_args(args)
+        ));
+        let directory = wide(directory);
+        let startup = STARTUPINFOW {
+            cb: size_of::<STARTUPINFOW>() as u32,
+            ..Default::default()
+        };
+        let mut info = PROCESS_INFORMATION::default();
+        // SAFETY: Token aus `shell_token`; alle Zeichenketten sind nullterminiert
+        // und leben bis nach dem Aufruf; `command_line` ist veränderbar, wie verlangt.
+        let (created, error) = unsafe {
+            let created = CreateProcessWithTokenW(
+                token,
+                0,
+                application.as_ptr(),
+                command_line.as_mut_ptr(),
+                0,
+                ptr::null(),
+                directory.as_ptr(),
+                &startup,
+                &mut info,
+            );
+            let error = io::Error::last_os_error();
+            CloseHandle(token);
+            (created, error)
+        };
+        if created == 0 {
+            return Err(error);
+        }
+        // SAFETY: Beide Handles stammen aus CreateProcessWithTokenW.
+        unsafe {
+            CloseHandle(info.hThread);
+            CloseHandle(info.hProcess);
+        }
+        Ok(())
+    }
+
+    /// Primäres Token des Explorer-Prozesses (der Shell des angemeldeten Benutzers).
+    fn shell_token() -> io::Result<HANDLE> {
+        // Laut Microsoft-Beispiel nötig, damit CreateProcessWithTokenW das
+        // Token verwenden darf; schlägt das fehl, versuchen wir es trotzdem.
+        enable_privilege(SE_INCREASE_QUOTA_NAME);
+        // SAFETY: Reine Abfragen bzw. Handles, die hier wieder geschlossen werden.
+        unsafe {
+            let shell = GetShellWindow();
+            if shell.is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "Die Windows-Shell (Explorer) läuft nicht",
+                ));
+            }
+            let mut pid = 0u32;
+            GetWindowThreadProcessId(shell, &mut pid);
+            if pid == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if process.is_null() {
+                return Err(io::Error::last_os_error());
+            }
+            let mut shell_token: HANDLE = ptr::null_mut();
+            let opened = OpenProcessToken(process, TOKEN_DUPLICATE, &mut shell_token);
+            let error = io::Error::last_os_error();
+            CloseHandle(process);
+            if opened == 0 {
+                return Err(error);
+            }
+            let mut token: HANDLE = ptr::null_mut();
+            let duplicated = DuplicateTokenEx(
+                shell_token,
+                TOKEN_QUERY
+                    | TOKEN_ASSIGN_PRIMARY
+                    | TOKEN_DUPLICATE
+                    | TOKEN_ADJUST_DEFAULT
+                    | TOKEN_ADJUST_SESSIONID,
+                ptr::null(),
+                SecurityImpersonation,
+                TokenPrimary,
+                &mut token,
+            );
+            let error = io::Error::last_os_error();
+            CloseHandle(shell_token);
+            if duplicated == 0 {
+                return Err(error);
+            }
+            Ok(token)
+        }
+    }
+
+    fn enable_privilege(name: windows_sys::core::PCWSTR) {
+        // SAFETY: Alle Zeiger zeigen auf lokale Variablen; das Token wird geschlossen.
+        unsafe {
+            let mut token: HANDLE = ptr::null_mut();
+            if OpenProcessToken(GetCurrentProcess(), TOKEN_ADJUST_PRIVILEGES, &mut token) == 0 {
+                return;
+            }
+            let mut privileges = TOKEN_PRIVILEGES {
+                PrivilegeCount: 1,
+                ..Default::default()
+            };
+            if LookupPrivilegeValueW(ptr::null(), name, &mut privileges.Privileges[0].Luid) != 0 {
+                privileges.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+                AdjustTokenPrivileges(token, 0, &privileges, 0, ptr::null_mut(), ptr::null_mut());
+            }
+            CloseHandle(token);
+        }
+    }
+
+    /// Wartet in einem eigenen Thread darauf, dass ein zweiter Start von WPM
+    /// das Fenster öffnen möchte, und ruft dann `on_signal` auf.
+    pub fn listen_for_activation(on_signal: Box<dyn Fn() + Send>) {
+        let name = wide(SHOW_EVENT_NAME);
+        let sddl = wide(SHOW_EVENT_SDDL);
+        let mut descriptor: PSECURITY_DESCRIPTOR = ptr::null_mut();
+        // SAFETY: Zeichenketten sind nullterminiert; der Deskriptor wird nach
+        // CreateEventW mit LocalFree freigegeben.
+        let event = unsafe {
+            let have_descriptor = ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                sddl.as_ptr(),
+                SDDL_REVISION_1,
+                &mut descriptor,
+                ptr::null_mut(),
+            ) != 0;
+            let attributes = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: descriptor,
+                bInheritHandle: 0,
+            };
+            let event = CreateEventW(
+                if have_descriptor {
+                    &attributes
+                } else {
+                    ptr::null()
+                },
+                0,
+                0,
+                name.as_ptr(),
+            );
+            if have_descriptor {
+                LocalFree(descriptor);
+            }
+            event
+        };
+        if event.is_null() {
+            return;
+        }
+        // HANDLE ist ein Zeiger und damit nicht `Send`; als Zahl übergeben.
+        let event = event as usize;
+        let _ = thread::Builder::new()
+            .name("activation".into())
+            .spawn(move || {
+                // SAFETY: Das Handle bleibt bis zum Prozessende offen.
+                while unsafe { WaitForSingleObject(event as HANDLE, INFINITE) } == WAIT_OBJECT_0 {
+                    on_signal();
+                }
+            });
+    }
+
+    /// Bittet die laufende Instanz, ihr Fenster zu zeigen. `false`, wenn
+    /// keine erreichbar ist.
+    pub fn signal_running_instance() -> bool {
+        let name = wide(SHOW_EVENT_NAME);
+        // SAFETY: Der Name ist nullterminiert; das Handle wird geschlossen.
+        unsafe {
+            let event = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+            if event.is_null() {
+                return false;
+            }
+            // Die laufende Instanz darf ihr Fenster in den Vordergrund holen.
+            AllowSetForegroundWindow(ASFW_ANY);
+            let signalled = SetEvent(event) != 0;
+            CloseHandle(event);
+            signalled
         }
     }
 
@@ -326,6 +527,16 @@ mod imp {
         Err(unsupported())
     }
 
+    pub fn launch_unelevated(_args: &[String]) -> io::Result<()> {
+        Err(unsupported())
+    }
+
+    pub fn listen_for_activation(_on_signal: Box<dyn Fn() + Send>) {}
+
+    pub fn signal_running_instance() -> bool {
+        false
+    }
+
     pub struct SingleInstance;
 
     impl SingleInstance {
@@ -383,6 +594,22 @@ pub fn is_elevated() -> bool {
 /// ist das Fensterhandle (HWND), damit die Nachfrage im Vordergrund erscheint.
 pub fn relaunch_elevated(args: &[String], window: Option<isize>) -> io::Result<()> {
     imp::relaunch_elevated(args, window)
+}
+
+/// Startet WPM ohne Adminrechte (mit dem Token der Windows-Shell), z. B. um
+/// nach Updates mit Adminrechten normal im Hintergrund weiterzulaufen.
+pub fn launch_unelevated(args: &[String]) -> io::Result<()> {
+    imp::launch_unelevated(args)
+}
+
+/// Ruft `on_signal` auf, wenn WPM ein zweites Mal gestartet wird.
+pub fn listen_for_activation(on_signal: impl Fn() + Send + 'static) {
+    imp::listen_for_activation(Box::new(on_signal));
+}
+
+/// Bittet eine bereits laufende Instanz, ihr Fenster zu zeigen.
+pub fn signal_running_instance() -> bool {
+    imp::signal_running_instance()
 }
 
 /// Nachgeladene DLLs nur noch aus System32 laden, nie aus dem Programmordner

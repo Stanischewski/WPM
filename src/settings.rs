@@ -117,8 +117,14 @@ pub struct Settings {
     pub version: u32,
     /// Mit Windows starten (Eintrag unter `HKCU\…\Run`).
     pub autostart: bool,
-    /// Beim Autostart nur in der Taskleiste starten.
+    /// Beim Autostart nur im Infobereich bzw. minimiert in der Taskleiste starten.
     pub start_minimized: bool,
+    /// Symbol im Infobereich der Taskleiste anzeigen.
+    pub tray_icon: bool,
+    /// Beim Schließen des Fensters im Infobereich weiterlaufen.
+    pub close_to_tray: bool,
+    /// Der Hinweis „WPM läuft im Infobereich weiter“ wurde schon gezeigt.
+    pub background_hint_shown: bool,
     /// WPM mit Adminrechten starten, damit Installer nicht einzeln nachfragen.
     pub run_as_admin: bool,
     pub check_on_startup: bool,
@@ -143,6 +149,9 @@ impl Default for Settings {
             version: SETTINGS_VERSION,
             autostart: false,
             start_minimized: true,
+            tray_icon: true,
+            close_to_tray: true,
+            background_hint_shown: false,
             run_as_admin: false,
             check_on_startup: true,
             auto_check: true,
@@ -228,5 +237,8 @@ mod tests {
         let settings: Settings = serde_json::from_str(r#"{"autostart": true}"#).unwrap();
         assert!(settings.autostart);
         assert_eq!(settings.check_interval_hours, 6);
+        // Ältere Dateien kennen den Infobereich noch nicht.
+        assert!(settings.tray_icon && settings.close_to_tray);
+        assert!(!settings.background_hint_shown);
     }
 }

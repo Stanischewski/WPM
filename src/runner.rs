@@ -48,7 +48,15 @@ pub trait Runner: Send + Sync {
 /// Führt die echte `winget.exe` aus.
 #[derive(Default)]
 pub struct WingetRunner {
-    child: Mutex<Option<Child>>,
+    running: Mutex<Option<Running>>,
+}
+
+/// Der laufende winget-Prozess samt Job-Objekt (Windows), über das sich auch
+/// die von winget gestarteten Installer beenden lassen.
+struct Running {
+    child: Child,
+    #[cfg(windows)]
+    job: Option<job::Job>,
 }
 
 impl Runner for WingetRunner {
@@ -73,7 +81,11 @@ impl Runner for WingetRunner {
         let mut child = cmd.spawn()?;
         let mut stdout = child.stdout.take().expect("stdout ist gepiped");
         let mut stderr = child.stderr.take().expect("stderr ist gepiped");
-        *self.child.lock().unwrap() = Some(child);
+        *self.running.lock().unwrap() = Some(Running {
+            #[cfg(windows)]
+            job: job::Job::for_child(&child),
+            child,
+        });
 
         let stderr_reader = thread::spawn(move || {
             let mut data = Vec::new();
@@ -106,9 +118,9 @@ impl Runner for WingetRunner {
         err_splitter.feed(&stderr_data, &mut emit);
         err_splitter.finish(&mut emit);
 
-        let child = self.child.lock().unwrap().take();
-        let status = match child {
-            Some(mut child) => child.wait()?,
+        let running = self.running.lock().unwrap().take();
+        let status = match running {
+            Some(mut running) => running.child.wait()?,
             None => return Err(io::Error::other("Prozess verloren")),
         };
         read_result?;
@@ -120,8 +132,63 @@ impl Runner for WingetRunner {
     }
 
     fn cancel(&self) {
-        if let Some(child) = self.child.lock().unwrap().as_mut() {
-            let _ = child.kill();
+        if let Some(running) = self.running.lock().unwrap().as_mut() {
+            // Über das Job-Objekt auch Installer beenden, die winget gestartet hat
+            // und die z. B. in einem eigenen Fenster auf eine Eingabe warten.
+            #[cfg(windows)]
+            if running.job.as_ref().is_some_and(job::Job::terminate) {
+                return;
+            }
+            let _ = running.child.kill();
+        }
+    }
+}
+
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle;
+    use std::process::Child;
+    use std::ptr;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, TerminateJobObject,
+    };
+
+    /// Job-Objekt, dem winget beim Start zugeordnet wird. Von winget gestartete
+    /// Prozesse (Installer) gehören automatisch dazu – außer solchen, die per
+    /// Windows-Bestätigung (UAC) mit Adminrechten starten. Beim Schließen des
+    /// Handles wird nichts beendet; nur [`Job::terminate`] beendet alle.
+    pub struct Job(HANDLE);
+
+    // SAFETY: Ein Job-Handle darf von jedem Thread aus benutzt werden.
+    unsafe impl Send for Job {}
+
+    impl Job {
+        pub fn for_child(child: &Child) -> Option<Self> {
+            // SAFETY: Ohne Name und Sicherheitsattribute; das Handle gehört danach `Job`.
+            let handle = unsafe { CreateJobObjectW(ptr::null(), ptr::null()) };
+            if handle.is_null() {
+                return None;
+            }
+            let job = Self(handle);
+            // SAFETY: Beide Handles sind gültig; das Prozess-Handle gehört `child`.
+            let assigned =
+                unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle() as HANDLE) } != 0;
+            assigned.then_some(job)
+        }
+
+        /// Beendet winget und alle Prozesse im Job.
+        pub fn terminate(&self) -> bool {
+            // SAFETY: Gültiges Handle aus CreateJobObjectW.
+            unsafe { TerminateJobObject(self.0, 1) != 0 }
+        }
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: Handle aus CreateJobObjectW, wird nur hier geschlossen.
+            unsafe { CloseHandle(self.0) };
         }
     }
 }

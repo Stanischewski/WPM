@@ -6,6 +6,7 @@ use super::WpmApp;
 use super::widgets::section;
 use crate::settings::{InstallMode, Scope, Settings, SourceFilter, Theme};
 use crate::system;
+use crate::tray;
 use crate::winget::Request;
 
 fn combo<T: Copy + PartialEq>(
@@ -44,6 +45,7 @@ impl WpmApp {
             let can_restart = self.can_restart_elevated();
             section(ui, "Allgemein", |ui| {
                 let settings = &mut self.settings;
+                let in_tray = settings.tray_icon && tray::SUPPORTED;
                 ui.add_enabled_ui(system::AUTOSTART_SUPPORTED, |ui| {
                     ui.checkbox(&mut settings.autostart, "Mit Windows starten");
                     ui.indent("autostart_options", |ui| {
@@ -51,8 +53,37 @@ impl WpmApp {
                             settings.autostart,
                             egui::Checkbox::new(
                                 &mut settings.start_minimized,
-                                "Minimiert starten (nur in der Taskleiste)",
+                                if in_tray {
+                                    "Im Hintergrund starten (nur Symbol im Infobereich)"
+                                } else {
+                                    "Minimiert starten (nur in der Taskleiste)"
+                                },
                             ),
+                        );
+                    });
+                })
+                .response
+                .on_disabled_hover_text("Nur unter Windows verfügbar");
+
+                ui.add_space(4.0);
+                ui.add_enabled_ui(tray::SUPPORTED, |ui| {
+                    ui.checkbox(&mut settings.tray_icon, "Symbol im Infobereich anzeigen");
+                    ui.indent("tray_options", |ui| {
+                        ui.add_enabled(
+                            settings.tray_icon,
+                            egui::Checkbox::new(
+                                &mut settings.close_to_tray,
+                                "Beim Schließen im Hintergrund weiterlaufen",
+                            ),
+                        );
+                        hint(
+                            ui,
+                            "Das Symbol sitzt unten rechts neben der Uhr (evtl. hinter „^“) und \
+                             zeigt mit einem orangen Punkt, dass Updates verfügbar sind. Klick: \
+                             WPM öffnen, Rechtsklick: Nach Updates suchen oder Beenden. Im \
+                             Hintergrund sucht WPM weiter nach Updates und meldet neue per \
+                             Benachrichtigung. Mit Administratorrechten kehrt WPM beim Schließen \
+                             ohne Adminrechte in den Hintergrund zurück.",
                         );
                     });
                 })
@@ -146,8 +177,9 @@ impl WpmApp {
                 ui.add_space(4.0);
                 hint(
                     ui,
-                    "Die automatische Suche läuft, solange WPM geöffnet ist – auch minimiert. \
-                     Zusammen mit „Mit Windows starten“ wird nach dem Hochfahren automatisch geprüft.",
+                    "Die automatische Suche läuft, solange WPM läuft – auch minimiert oder im \
+                     Hintergrund (Infobereich). Zusammen mit „Mit Windows starten“ wird nach dem \
+                     Hochfahren automatisch geprüft.",
                 );
             });
 
@@ -278,7 +310,12 @@ impl WpmApp {
                 ui.add_space(4.0);
                 if ui.button("Standardwerte wiederherstellen").clicked() {
                     let autostart = self.settings.autostart;
-                    self.settings = Settings { autostart, ..Settings::default() };
+                    let background_hint_shown = self.settings.background_hint_shown;
+                    self.settings = Settings {
+                        autostart,
+                        background_hint_shown,
+                        ..Settings::default()
+                    };
                 }
             });
             ui.add_space(12.0);

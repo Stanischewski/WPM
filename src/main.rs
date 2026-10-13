@@ -7,6 +7,7 @@ mod runner;
 mod scheduler;
 mod settings;
 mod system;
+mod tray;
 mod winget;
 mod worker;
 
@@ -23,6 +24,9 @@ const ELEVATED_FLAG: &str = "--elevated";
 const USER_SID_FLAG: &str = "--user-sid=";
 /// Paket, dessen Update nach dem Neustart mit Adminrechten fortgesetzt wird.
 const UPGRADE_FLAG: &str = "--upgrade=";
+/// Unsichtbar im Infobereich starten, nachdem die Instanz mit Adminrechten
+/// geschlossen wurde.
+const BACKGROUND_FLAG: &str = "--background";
 
 fn main() -> eframe::Result {
     system::harden_dll_search();
@@ -32,10 +36,11 @@ fn main() -> eframe::Result {
     let settings = Settings::load();
     let demo = has("--demo");
     let autostart = has("--autostart");
-    let relaunched = has(ELEVATED_FLAG);
+    let background = has(BACKGROUND_FLAG);
+    let relaunched = has(ELEVATED_FLAG) || background;
 
     // Nur eine Instanz: Autostart und manueller Start sollen sich nicht doppeln.
-    // Nach einem Neustart mit Adminrechten kurz warten, bis die alte Instanz zu ist.
+    // Nach einem Neustart kurz warten, bis die alte Instanz beendet ist.
     let _instance = if demo {
         None
     } else {
@@ -47,10 +52,13 @@ fn main() -> eframe::Result {
         match system::SingleInstance::acquire(wait) {
             Some(guard) => Some(guard),
             None => {
-                if !autostart {
+                // Ein erneuter Start holt das Fenster der laufenden Instanz
+                // nach vorn – auch aus dem Infobereich.
+                if !autostart && !background && !system::signal_running_instance() {
                     system::message_box(
                         "WPM",
-                        "WPM läuft bereits – das Fenster ist eventuell in der Taskleiste minimiert.",
+                        "WPM läuft bereits – das Fenster ist eventuell in der Taskleiste \
+                         minimiert oder im Infobereich (unten rechts neben der Uhr).",
                     );
                 }
                 return Ok(());
@@ -68,7 +76,8 @@ fn main() -> eframe::Result {
 
     let flags = StartupFlags {
         demo,
-        minimized: has("--minimized") || (autostart && settings.start_minimized),
+        minimized: has("--minimized") || background || (autostart && settings.start_minimized),
+        background,
         elevated: system::is_elevated(),
         other_account,
         resume_upgrades: args
@@ -105,5 +114,15 @@ pub fn relaunch_args(demo: bool, upgrade_ids: &[String]) -> Vec<String> {
         args.push("--demo".into());
     }
     args.extend(upgrade_ids.iter().map(|id| format!("{UPGRADE_FLAG}{id}")));
+    args
+}
+
+/// Argumente für den Start ohne Adminrechte im Infobereich, wenn die Instanz
+/// mit Adminrechten geschlossen wird.
+pub fn background_args(demo: bool) -> Vec<String> {
+    let mut args = vec![BACKGROUND_FLAG.to_string()];
+    if demo {
+        args.push("--demo".into());
+    }
     args
 }

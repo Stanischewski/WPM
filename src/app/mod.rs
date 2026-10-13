@@ -10,6 +10,7 @@ mod widgets;
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::mem::discriminant;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
@@ -19,6 +20,7 @@ use crate::runner::{Runner, WingetRunner};
 use crate::scheduler;
 use crate::settings::Settings;
 use crate::system;
+use crate::tray::{self, Command, CommandSender, Tray};
 use crate::winget::demo::DemoRunner;
 use crate::winget::parse;
 use crate::winget::{
@@ -27,11 +29,17 @@ use crate::winget::{
 use crate::worker::{JobId, Worker, WorkerEvent};
 
 const MAX_LOG_LINES: usize = 5000;
+/// Ab so langer Stille eines Installers weist die Statusleiste darauf hin.
+const SILENCE_HINT: Duration = Duration::from_secs(180);
 
 pub struct StartupFlags {
     pub demo: bool,
-    /// Vom Autostart gestartet bzw. ausdrücklich minimiert gewünscht.
+    /// Vom Autostart gestartet bzw. ausdrücklich minimiert gewünscht. Mit
+    /// Symbol im Infobereich startet WPM dann ganz ohne sichtbares Fenster.
     pub minimized: bool,
+    /// Nach dem Schließen der Instanz mit Adminrechten im Hintergrund neu
+    /// gestartet: bekannte Updates nicht erneut melden.
+    pub background: bool,
     /// WPM läuft mit Administratorrechten.
     pub elevated: bool,
     /// Läuft mit Adminrechten eines anderen Benutzerkontos.
@@ -139,6 +147,8 @@ pub struct WpmApp {
     /// Letzte Statuszeile des laufenden Auftrags, z. B. „Wird heruntergeladen …“.
     last_line: String,
     job_started: Option<Instant>,
+    /// Zeitpunkt der letzten Ausgabe des laufenden Auftrags.
+    last_output: Option<Instant>,
 
     installed: Option<Vec<Package>>,
     installed_filter: String,
@@ -172,6 +182,22 @@ pub struct WpmApp {
     first_frame: bool,
     demo: bool,
     window_title: String,
+
+    /// Symbol im Infobereich (nur Windows und nur, wenn eingeschaltet).
+    tray: Option<Tray>,
+    /// Befehle vom Symbol im Infobereich und von einem erneuten Programmstart.
+    commands: Receiver<Command>,
+    command_sender: CommandSender,
+    /// Fenster ist versteckt, WPM läuft im Infobereich.
+    hidden: bool,
+    /// WPM wird beendet; das Schließen nicht mehr in den Infobereich umleiten.
+    quitting: bool,
+    /// Mit Adminrechten geschlossen: sobald nichts mehr läuft, ohne
+    /// Adminrechte im Infobereich neu starten.
+    leave_elevated: bool,
+    /// Ergebnisse von Installationen o. Ä. bei verstecktem Fenster, für eine
+    /// Benachrichtigung, sobald alles erledigt ist.
+    background_results: Vec<(String, bool)>,
 }
 
 impl WpmApp {
@@ -200,6 +226,13 @@ impl WpmApp {
             Arc::new(WingetRunner::default())
         };
         let worker = Worker::spawn(runner, ctx.clone());
+        let (sender, commands) = mpsc::channel();
+        let command_sender = CommandSender::new(sender, ctx.clone());
+        if !flags.demo {
+            // Ein zweiter Start von WPM holt das Fenster nach vorn.
+            let sender = command_sender.clone();
+            system::listen_for_activation(move || sender.send(Command::Show));
+        }
         let shared_settings = Arc::new(RwLock::new(settings.clone()));
         scheduler::spawn(
             shared_settings.clone(),
@@ -216,6 +249,7 @@ impl WpmApp {
             progress: String::new(),
             last_line: String::new(),
             job_started: None,
+            last_output: None,
             installed: None,
             installed_filter: String::new(),
             updates: None,
@@ -242,7 +276,15 @@ impl WpmApp {
             first_frame: true,
             demo: flags.demo,
             window_title: String::new(),
+            tray: None,
+            commands,
+            command_sender,
+            hidden: false,
+            quitting: false,
+            leave_elevated: false,
+            background_results: Vec::new(),
         };
+        app.sync_tray();
 
         if flags.other_account {
             app.notice(
@@ -256,7 +298,7 @@ impl WpmApp {
         // Nach einem Neustart mit Adminrechten zuerst die Liste holen, dann
         // die gewünschten Updates fortsetzen (siehe `resume_after_restart`).
         if app.settings.check_on_startup || !app.resume_upgrades.is_empty() {
-            let notify = flags.minimized && app.settings.notify;
+            let notify = flags.minimized && !flags.background && app.settings.notify;
             app.worker
                 .sender
                 .submit(app.check_request(), app.options(), notify);
@@ -336,7 +378,7 @@ impl WpmApp {
         match system::relaunch_elevated(&args, self.window) {
             Ok(()) => {
                 self.worker.cancel_all();
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.quit(ctx);
                 true
             }
             Err(e) => {
@@ -488,6 +530,7 @@ impl WpmApp {
                     self.progress.clear();
                     self.last_line.clear();
                     self.job_started = Some(Instant::now());
+                    self.last_output = self.job_started;
                     if let Some(job) = self.queue.iter_mut().find(|job| job.id == id) {
                         job.running = true;
                         if let Some(package_id) = job.request.package_id() {
@@ -496,8 +539,12 @@ impl WpmApp {
                         }
                     }
                 }
-                WorkerEvent::Progress(text) => self.progress = text,
+                WorkerEvent::Progress(text) => {
+                    self.progress = text;
+                    self.last_output = Some(Instant::now());
+                }
                 WorkerEvent::Log(line) => {
+                    self.last_output = Some(Instant::now());
                     // Bei Installationen o. Ä. zeigt die Statusleiste die letzte
                     // Meldung von winget; Abfragen liefern nur Tabellenzeilen.
                     let installing = self
@@ -528,6 +575,7 @@ impl WpmApp {
                     self.progress.clear();
                     self.last_line.clear();
                     self.job_started = None;
+                    self.last_output = None;
                     self.handle_result(ctx, request, result);
                 }
             }
@@ -569,6 +617,11 @@ impl WpmApp {
         if request.changes_packages() && result.is_ok() {
             self.needs_refresh = true;
         }
+        if self.hidden
+            && let Some(text) = background_result_text(&request, &result)
+        {
+            self.background_results.push(text);
+        }
         let note = match &result {
             Ok(Response::Done(Some(note))) => format!(" {note}"),
             _ => String::new(),
@@ -602,7 +655,7 @@ impl WpmApp {
                 self.status
                     .retain(|_, s| !matches!(s, PackageStatus::Done(_)));
                 let focused = ctx.input(|i| i.viewport().focused).unwrap_or(true);
-                if !list.upgrades.is_empty() && !focused {
+                if !list.upgrades.is_empty() && !focused && !self.hidden {
                     ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(
                         egui::UserAttentionType::Informational,
                     ));
@@ -734,6 +787,9 @@ impl WpmApp {
         if self.settings.theme != before.theme {
             ctx.set_theme(self.settings.theme.to_egui());
         }
+        if self.settings.tray_icon != before.tray_icon {
+            self.sync_tray();
+        }
         *self.shared_settings.write().unwrap() = self.settings.clone();
         if let Err(e) = self.settings.save() {
             self.notice(
@@ -753,6 +809,171 @@ impl WpmApp {
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
             self.window_title = title;
+        }
+    }
+
+    // --- Infobereich und Hintergrundbetrieb ---
+
+    /// Legt das Symbol im Infobereich an bzw. entfernt es, passend zur Einstellung.
+    fn sync_tray(&mut self) {
+        if !(self.settings.tray_icon && tray::SUPPORTED) {
+            self.tray = None;
+        } else if self.tray.is_none() {
+            match Tray::new(&self.command_sender) {
+                Ok(tray) => self.tray = Some(tray),
+                Err(e) => self.notice(
+                    NoticeKind::Error,
+                    format!("Symbol im Infobereich konnte nicht angelegt werden: {e}"),
+                ),
+            }
+        }
+    }
+
+    /// Läuft WPM beim Schließen des Fensters im Infobereich weiter?
+    fn keeps_running_in_background(&self) -> bool {
+        self.tray.is_some() && self.settings.close_to_tray
+    }
+
+    fn show_window(&mut self, ctx: &egui::Context) {
+        self.hidden = false;
+        self.leave_elevated = false;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+        if ctx.input(|i| i.viewport().minimized) == Some(true) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+        ctx.request_repaint();
+    }
+
+    fn hide_window(&mut self, ctx: &egui::Context) {
+        self.hidden = true;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+    }
+
+    /// Beendet WPM ganz, statt es in den Infobereich zu schicken.
+    fn quit(&mut self, ctx: &egui::Context) {
+        self.quitting = true;
+        // Symbol sofort entfernen, nicht erst beim Prozessende.
+        self.tray = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        ctx.request_repaint();
+    }
+
+    fn handle_commands(&mut self, ctx: &egui::Context) {
+        while let Ok(command) = self.commands.try_recv() {
+            match command {
+                Command::Show => self.show_window(ctx),
+                Command::CheckUpdates => {
+                    if !self.busy(|r| matches!(r, Request::CheckUpdates { .. })) {
+                        // Bei verstecktem Fenster neue Updates als Benachrichtigung melden.
+                        let notify = self.hidden && self.settings.notify;
+                        self.worker
+                            .sender
+                            .submit(self.check_request(), self.options(), notify);
+                    }
+                }
+                Command::Quit => self.quit(ctx),
+            }
+        }
+    }
+
+    /// Fenster geschlossen: je nach Einstellung im Infobereich weiterlaufen.
+    fn handle_close_request(&mut self, ctx: &egui::Context) {
+        if self.quitting || !ctx.input(|i| i.viewport().close_requested()) {
+            return;
+        }
+        if !self.keeps_running_in_background() {
+            self.quitting = true;
+            self.tray = None;
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        self.hide_window(ctx);
+        // Mit Adminrechten nicht dauerhaft im Hintergrund bleiben: Sobald nichts
+        // mehr läuft, übernimmt eine Instanz ohne Adminrechte.
+        self.leave_elevated = self.elevated;
+        if !self.settings.background_hint_shown {
+            system::notify(
+                "WPM läuft im Hintergrund weiter",
+                "Ein Klick auf das Symbol im Infobereich (unten rechts) öffnet WPM wieder. \
+                 Beenden: Rechtsklick auf das Symbol → „Beenden“.",
+            );
+            let before = self.settings.clone();
+            self.settings.background_hint_shown = true;
+            self.settings_changed(ctx, &before);
+        }
+    }
+
+    /// Mit Adminrechten in den Hintergrund geschickt: sobald nichts mehr läuft,
+    /// ohne Adminrechte im Infobereich neu starten und sich selbst beenden.
+    fn leave_elevated_when_idle(&mut self, ctx: &egui::Context) {
+        if !self.leave_elevated || !self.queue.is_empty() {
+            return;
+        }
+        self.leave_elevated = false;
+        if let Err(e) = system::launch_unelevated(&crate::background_args(self.demo)) {
+            system::notify(
+                "WPM wurde beendet",
+                &format!(
+                    "Mit Administratorrechten bleibt WPM nicht im Hintergrund, und ein Neustart \
+                     ohne Adminrechte war nicht möglich ({e}). WPM einfach wieder starten."
+                ),
+            );
+        }
+        self.quit(ctx);
+    }
+
+    fn update_tray(&mut self) {
+        if self.tray.is_none() {
+            return;
+        }
+        let count = self.updates.as_ref().map(|u| u.upgrades.len());
+        let status = match self.queue.iter().find(|job| job.running) {
+            Some(job) => match self.queue.len() - 1 {
+                0 => format!("{} …", job.request.label()),
+                waiting => format!("{} … (+{waiting})", job.request.label()),
+            },
+            None => match count {
+                None => "Windows-Paketmanager".to_string(),
+                Some(0) => "Keine Updates verfügbar".to_string(),
+                Some(1) => "1 Update verfügbar".to_string(),
+                Some(n) => format!("{n} Updates verfügbar"),
+            },
+        };
+        let state = tray::State {
+            status,
+            badge: count.is_some_and(|n| n > 0),
+            checking: self.busy(|r| matches!(r, Request::CheckUpdates { .. })),
+        };
+        if let Some(tray) = &mut self.tray {
+            tray.update(state);
+        }
+    }
+
+    /// Bei verstecktem Fenster: eine Benachrichtigung, sobald alle
+    /// Installationen o. Ä. durch sind – vor allem, wenn etwas fehlschlug.
+    fn notify_background_results(&mut self) {
+        if !self.hidden {
+            self.background_results.clear();
+            return;
+        }
+        if self.background_results.is_empty() || !self.queue.is_empty() {
+            return;
+        }
+        let results = std::mem::take(&mut self.background_results);
+        let failed: Vec<&str> = results
+            .iter()
+            .filter(|(_, ok)| !ok)
+            .map(|(text, _)| text.as_str())
+            .collect();
+        if failed.is_empty() {
+            let done: Vec<&str> = results.iter().map(|(text, _)| text.as_str()).collect();
+            system::notify("WPM: Fertig", &summarize(&done));
+        } else {
+            system::notify(
+                &format!("WPM: {} von {} fehlgeschlagen", failed.len(), results.len()),
+                &format!("{} – Details im WPM-Fenster.", summarize(&failed)),
+            );
         }
     }
 
@@ -960,7 +1181,10 @@ impl WpmApp {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
                         .button("⏹ Abbrechen")
-                        .on_hover_text("Laufenden Vorgang abbrechen und Warteschlange leeren")
+                        .on_hover_text(
+                            "Laufenden Vorgang abbrechen (auch einen hängenden Installer) \
+                             und Warteschlange leeren",
+                        )
                         .clicked()
                     {
                         self.worker.cancel_all();
@@ -972,12 +1196,39 @@ impl WpmApp {
                     // Balken unbestimmt und daneben steht die letzte Statuszeile.
                     let fraction = parse::progress_fraction(&self.progress);
                     widgets::progress_bar(ui, fraction, 140.0);
-                    let detail = if fraction.is_some() {
-                        self.progress.replace(['█', '▒'], "").trim().to_string()
+                    let silence = self
+                        .last_output
+                        .map(|t| t.elapsed())
+                        .filter(|d| *d >= SILENCE_HINT && job.request.changes_packages());
+                    if let Some(silence) = silence {
+                        // Häufigster Grund für „hängt“: Der Installer wartet in einem
+                        // eigenen Fenster auf eine Eingabe.
+                        ui.add(
+                            egui::Label::new(
+                                RichText::new(format!(
+                                    "⚠ Seit {} Min. keine Rückmeldung – wartet der Installer?",
+                                    silence.as_secs() / 60
+                                ))
+                                .color(ui.visuals().warn_fg_color),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text(
+                            "Große Installer brauchen manchmal lange. Manche öffnen aber trotz \
+                             „Still“ ein eigenes (Konsolen-)Fenster und warten dort auf eine \
+                             Eingabe – z. B. rustup-init, wenn Rust-Programme wie cargo oder \
+                             rust-analyzer noch laufen. Fenster in der Taskleiste prüfen, das \
+                             betroffene Programm schließen oder „Abbrechen“ (beendet auch den \
+                             Installer).",
+                        );
                     } else {
-                        self.last_line.clone()
-                    };
-                    ui.add(egui::Label::new(RichText::new(detail).weak()).truncate());
+                        let detail = if fraction.is_some() {
+                            self.progress.replace(['█', '▒'], "").trim().to_string()
+                        } else {
+                            self.last_line.clone()
+                        };
+                        ui.add(egui::Label::new(RichText::new(detail).weak()).truncate());
+                    }
                 });
             } else {
                 ui.label("Bereit");
@@ -1015,20 +1266,37 @@ impl WpmApp {
 }
 
 impl eframe::App for WpmApp {
+    // Läuft auch bei verstecktem Fenster, sobald etwas passiert (Ereignisse
+    // vom Worker, Klick aufs Symbol im Infobereich, erneuter Programmstart).
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.process_events(ctx);
-        // Gesammelte Updates: Neustart mit Adminrechten, sobald nichts mehr installiert.
-        self.start_elevated_upgrades(ctx);
-    }
-
-    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let ctx = ui.ctx().clone();
         if self.first_frame {
             self.first_frame = false;
             if self.start_minimized {
-                ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                // Mit Symbol im Infobereich ganz unsichtbar, sonst in der Taskleiste.
+                if self.tray.is_some() {
+                    self.hide_window(ctx);
+                } else {
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
+                }
             }
         }
+        self.process_events(ctx);
+        self.handle_commands(ctx);
+        self.handle_close_request(ctx);
+        // Gesammelte Updates: Neustart mit Adminrechten, sobald nichts mehr installiert.
+        self.start_elevated_upgrades(ctx);
+        self.leave_elevated_when_idle(ctx);
+        self.update_tray();
+        self.notify_background_results();
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Versteckt nichts zeichnen – das spart auch die ständigen Neuzeichnungen
+        // durch Ladeanimationen.
+        if self.hidden {
+            return;
+        }
+        let ctx = ui.ctx().clone();
         self.update_window_title(&ctx);
 
         egui::Panel::top("tabs").show(ui, |ui| {
@@ -1061,6 +1329,44 @@ impl eframe::App for WpmApp {
         self.details_window(&ctx);
         self.confirm_uninstall_dialog(&ctx);
     }
+}
+
+/// Text für die Benachrichtigung nach Vorgängen bei verstecktem Fenster;
+/// `None` für Abfragen und abgebrochene Vorgänge.
+fn background_result_text(
+    request: &Request,
+    result: &Result<Response, Failure>,
+) -> Option<(String, bool)> {
+    let ok = match result {
+        Ok(_) => true,
+        Err(failure) if failure.cancelled => return None,
+        Err(_) => false,
+    };
+    let text = match request {
+        Request::Install { .. }
+        | Request::Upgrade { .. }
+        | Request::Uninstall { .. }
+        | Request::Import { .. }
+            if !ok =>
+        {
+            request.label()
+        }
+        Request::Install { package } => format!("{} installiert", package.name),
+        Request::Upgrade { package } => format!("{} aktualisiert", package.name),
+        Request::Uninstall { package } => format!("{} deinstalliert", package.name),
+        Request::Import { .. } => "Import abgeschlossen".to_string(),
+        _ => return None,
+    };
+    Some((text, ok))
+}
+
+/// Höchstens vier Einträge, danach „…“.
+fn summarize(items: &[&str]) -> String {
+    let mut text = items.iter().take(4).copied().collect::<Vec<_>>().join(", ");
+    if items.len() > 4 {
+        text.push_str(", …");
+    }
+    text
 }
 
 fn setup_style(ctx: &egui::Context) {
