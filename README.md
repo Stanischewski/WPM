@@ -69,12 +69,31 @@ Ist zusätzlich „Mit Windows starten“ aktiv, richtet WPM statt des Run-Eintr
 eine Aufgabe **„WPM Autostart“** in der Aufgabenplanung ein (beim Anmelden, mit
 höchsten Rechten). Dann erscheint auch beim Anmelden keine Nachfrage. Diese
 Aufgabe kann nur mit Adminrechten angelegt werden – WPM macht das automatisch,
-sobald es einmal als Administrator läuft.
+sobald es einmal als Administrator läuft. Voraussetzung: **`wpm.exe` liegt
+unter `C:\Program Files`** (z. B. `C:\Program Files\WPM\wpm.exe`). Liegt sie
+z. B. im Download-Ordner, könnte jedes Programm die Datei austauschen und
+würde beim nächsten Anmelden unbemerkt Adminrechte erhalten. In diesem Fall
+nutzt WPM weiter den Run-Eintrag, und Windows fragt beim Anmelden einmal nach.
+Die Aufgabe lässt sich außerdem nicht manuell (`schtasks /Run`) starten.
 
-Der Administrator-Modus ist nur sinnvoll, wenn das eigene Benutzerkonto ein
-Administratorkonto ist. Gibt man bei der Nachfrage die Zugangsdaten eines
-*anderen* Kontos ein, läuft WPM unter diesem Konto – mit dessen Einstellungen
-und benutzerbezogenen Programmen.
+Grenzen des Administrator-Modus:
+
+- Der Administrator-Modus ist nur sinnvoll, wenn das eigene Benutzerkonto ein
+  Administratorkonto ist. Gibt man bei der Nachfrage die Zugangsdaten eines
+  *anderen* Kontos ein, läuft WPM unter diesem Konto – mit dessen Einstellungen
+  und benutzerbezogenen Programmen. WPM erkennt das und warnt.
+- Manche Installer verweigern Adminrechte (winget-Code `0x8A150056`, z. B.
+  Spotify), und benutzerbezogene Programme lassen sich mit Adminrechten nicht
+  deinstallieren (`0x8A15007D`). Dafür WPM ohne Administrator-Modus starten.
+- Fenster, die keine UAC-Nachfragen sind (Treiber-Vertrauensabfragen,
+  Installer, die `--silent` ignorieren, Programme, die nach dem Update neu
+  starten), verhindert auch der Administrator-Modus nicht.
+
+**Update installiert, aber weiter in der Liste?** Bei MSIX-Paketen (z. B.
+Claude) meldet winget Erfolg, aktiviert die neue Version aber erst, wenn die
+Anwendung beendet ist. WPM erkennt das und weist darauf hin. Bleibt das Update
+auch danach stehen, erkennt winget die Version falsch – dann das Paket
+anheften, vor allem wenn es sich ohnehin selbst aktualisiert.
 
 ### Cross-Compile unter Linux
 
@@ -144,7 +163,9 @@ im Administrator-Modus stattdessen die Aufgabe „WPM Autostart“.
   der Installer hilft der Administrator-Modus (siehe oben).
 - **Sicherheit:** `winget.exe` und `schtasks.exe` werden über ihren vollen
   Pfad gestartet, damit nie eine gleichnamige Datei aus dem Programmordner
-  (z. B. dem Download-Ordner) mit Adminrechten läuft.
+  (z. B. dem Download-Ordner) mit Adminrechten läuft. Die XML-Datei für die
+  Aufgabenplanung entsteht in `C:\ProgramData`, wo normale Programme sie
+  nicht verändern können.
 - **Hintergrundprüfung** läuft, solange WPM geöffnet ist (auch minimiert).
   Ein Symbol im Infobereich (Tray) gibt es noch nicht.
 

@@ -131,8 +131,16 @@ pub const INSTALL_CANCELLED_BY_USER: u32 = 0x8A15_010C;
 pub const COMMAND_REQUIRES_ADMIN: u32 = 0x8A15_0019;
 /// `HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED)` (Win32-Fehler 740).
 pub const ERROR_ELEVATION_REQUIRED: u32 = 0x8007_02E4;
-/// MSIX-Paket, dessen Aktualisierung Adminrechte braucht.
+/// `ERROR_PACKAGED_SERVICE_REQUIRES_ADMIN_PRIVILEGES`: MSIX-Paket mit
+/// Windows-Dienst (z. B. Claude), braucht zum Installieren Adminrechte.
 pub const MSIX_REQUIRES_ADMIN: u32 = 0x8007_3D28;
+/// `HRESULT_FROM_WIN32(ERROR_CANCELLED)`: Windows-Bestätigung abgelehnt.
+pub const UAC_CANCELLED: u32 = 0x8007_04C7;
+/// Der Installer verweigert Adminrechte (z. B. Spotify).
+pub const INSTALLER_PROHIBITS_ELEVATION: u32 = 0x8A15_0056;
+/// Benutzerbezogene Programme lassen sich mit Adminrechten nicht deinstallieren.
+pub const ADMIN_CONTEXT_ACTION_PROHIBITED: u32 = 0x8A15_007D;
+pub const PACKAGE_IS_PINNED: u32 = 0x8A15_0068;
 
 const ACCEPT_SOURCE: &str = "--accept-source-agreements";
 const ACCEPT_PACKAGE: &str = "--accept-package-agreements";
@@ -356,10 +364,11 @@ pub struct Failure {
 }
 
 /// Fehlercodes, bei denen ein Start mit Adminrechten helfen dürfte.
-const ADMIN_CODES: [u32; 4] = [
+const ADMIN_CODES: [u32; 5] = [
     COMMAND_REQUIRES_ADMIN,
     ERROR_ELEVATION_REQUIRED,
     MSIX_REQUIRES_ADMIN,
+    UAC_CANCELLED,
     // Meist eine abgelehnte oder unbeantwortete Windows-Bestätigung.
     INSTALL_CANCELLED_BY_USER,
 ];
@@ -417,7 +426,13 @@ impl Failure {
             let line = line.to_lowercase();
             line.contains("administra") || line.contains("elevat")
         });
-        let needs_admin = mentions_admin || code.is_some_and(|c| ADMIN_CODES.contains(&c));
+        // Diese beiden Fehler entstehen gerade *wegen* Adminrechten.
+        let needs_unelevated = matches!(
+            code,
+            Some(INSTALLER_PROHIBITS_ELEVATION | ADMIN_CONTEXT_ACTION_PROHIBITED)
+        );
+        let needs_admin =
+            !needs_unelevated && (mentions_admin || code.is_some_and(|c| ADMIN_CODES.contains(&c)));
         Self {
             summary,
             details,
@@ -475,6 +490,16 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
         0x8A15_010E => "eine neuere Version ist bereits installiert",
         0x8A15_010F => "durch Richtlinien blockiert",
         ERROR_ELEVATION_REQUIRED | MSIX_REQUIRES_ADMIN => "Administratorrechte erforderlich",
+        UAC_CANCELLED => "die Windows-Bestätigung wurde abgelehnt",
+        PACKAGE_IS_PINNED => "das Paket ist angeheftet",
+        INSTALLER_PROHIBITS_ELEVATION => {
+            "der Installer lässt sich nicht mit Administratorrechten ausführen – \
+             WPM ohne Administrator-Modus starten und erneut versuchen"
+        }
+        ADMIN_CONTEXT_ACTION_PROHIBITED => {
+            "mit Administratorrechten nicht erlaubt (benutzerbezogenes Programm) – \
+             WPM ohne Administrator-Modus starten und erneut versuchen"
+        }
         _ => return None,
     })
 }
@@ -599,6 +624,14 @@ mod tests {
                 .starts_with("Installation fehlgeschlagen mit Exitcode: 0x80073d28")
         );
         assert!(failure.needs_admin);
+
+        let prohibited = CommandOutput {
+            lines: vec!["The installer cannot be run from an administrator context.".into()],
+            exit_code: Some(INSTALLER_PROHIBITS_ELEVATION as i32),
+        };
+        let failure = Failure::from_output(&prohibited);
+        assert!(!failure.needs_admin, "Fehler entsteht durch Adminrechte");
+        assert!(failure.summary.contains("ohne Administrator-Modus"));
 
         let declined = CommandOutput {
             lines: vec!["Installation abgebrochen".into()],

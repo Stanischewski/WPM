@@ -19,6 +19,8 @@ use settings::Settings;
 
 /// Markiert den mit Adminrechten neu gestarteten Prozess.
 const ELEVATED_FLAG: &str = "--elevated";
+/// Konto, das den Neustart angestoßen hat (zum Erkennen fremder Admin-Konten).
+const USER_SID_FLAG: &str = "--user-sid=";
 
 fn main() -> eframe::Result {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,7 +36,7 @@ fn main() -> eframe::Result {
     let mut elevation_declined = false;
     if settings.run_as_admin && !elevated && !relaunched && system::ELEVATION_SUPPORTED {
         let mut elevated_args = args.clone();
-        elevated_args.push(ELEVATED_FLAG.into());
+        elevated_args.extend(relaunch_flags());
         match system::relaunch_elevated(&elevated_args, None) {
             Ok(()) => return Ok(()),
             Err(_) => elevation_declined = true,
@@ -64,11 +66,19 @@ fn main() -> eframe::Result {
         }
     };
 
+    // Gibt ein Standardbenutzer bei der Nachfrage die Zugangsdaten eines
+    // anderen Kontos ein, läuft WPM unter diesem Konto.
+    let other_account = args
+        .iter()
+        .find_map(|a| a.strip_prefix(USER_SID_FLAG))
+        .is_some_and(|expected| system::user_sid().is_some_and(|sid| sid != expected));
+
     let flags = StartupFlags {
         demo,
         minimized: has("--minimized") || (autostart && settings.start_minimized),
         elevated,
         elevation_declined,
+        other_account,
     };
 
     let options = eframe::NativeOptions {
@@ -85,4 +95,13 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| Ok(Box::new(WpmApp::new(cc, settings, flags)))),
     )
+}
+
+/// Zusätzliche Argumente für den Neustart mit Adminrechten.
+pub fn relaunch_flags() -> Vec<String> {
+    let mut flags = vec![ELEVATED_FLAG.to_string()];
+    if let Some(sid) = system::user_sid() {
+        flags.push(format!("{USER_SID_FLAG}{sid}"));
+    }
+    flags
 }

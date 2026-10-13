@@ -35,6 +35,8 @@ pub struct StartupFlags {
     pub elevated: bool,
     /// Administrator-Modus ist eingestellt, die Windows-Bestätigung wurde aber abgelehnt.
     pub elevation_declined: bool,
+    /// Läuft mit Adminrechten eines anderen Benutzerkontos.
+    pub other_account: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -136,6 +138,9 @@ pub struct WpmApp {
     needs_refresh: bool,
     focus_search: bool,
     elevated: bool,
+    other_account: bool,
+    /// Erfolgreich aktualisierte Pakete (ID → Version) bis zur nächsten Prüfung.
+    recently_upgraded: HashMap<String, String>,
     /// HWND des Hauptfensters (für die Windows-Bestätigung im Vordergrund).
     window: Option<isize>,
     start_minimized: bool,
@@ -161,8 +166,9 @@ impl WpmApp {
         // eine vorhandene Aufgabe unangetastet (sie lässt sich dann nicht ändern).
         if system::AUTOSTART_SUPPORTED {
             settings.autostart = system::autostart_enabled();
-            let use_task = settings.run_as_admin && flags.elevated;
-            if settings.autostart && (use_task || !settings.run_as_admin) {
+            let use_task = elevated_task_possible(&settings, flags.elevated, flags.other_account);
+            let may_change = !flags.other_account && (flags.elevated || !settings.run_as_admin);
+            if settings.autostart && may_change {
                 let _ = system::configure_autostart(true, use_task);
             }
         }
@@ -205,6 +211,8 @@ impl WpmApp {
             needs_refresh: false,
             focus_search: false,
             elevated: flags.elevated,
+            other_account: flags.other_account,
+            recently_upgraded: HashMap::new(),
             window: system::native_window(cc),
             start_minimized: flags.minimized,
             first_frame: true,
@@ -220,6 +228,14 @@ impl WpmApp {
                     "Die Windows-Bestätigung wurde abgelehnt – WPM läuft diesmal ohne Administratorrechte.",
                 )
             });
+        }
+        if flags.other_account {
+            app.notice(
+                NoticeKind::Error,
+                "WPM läuft mit den Adminrechten eines anderen Benutzerkontos. Programme, \
+                 Einstellungen und Autostart beziehen sich jetzt auf dieses Konto – dafür ist der \
+                 Administrator-Modus nicht gedacht.",
+            );
         }
         app.submit(Request::Version);
         if app.settings.check_on_startup {
@@ -277,7 +293,7 @@ impl WpmApp {
 
     /// Startet WPM mit Administratorrechten neu (Windows fragt einmal nach).
     fn restart_elevated(&mut self, ctx: &egui::Context) {
-        let mut args = vec!["--elevated".to_string()];
+        let mut args = crate::relaunch_flags();
         if self.demo {
             args.push("--demo".into());
         }
@@ -437,6 +453,7 @@ impl WpmApp {
                 self.installed = Some(packages);
             }
             (Request::CheckUpdates { .. }, Ok(Response::Updates(list))) => {
+                self.report_pending_upgrades(&list);
                 self.selected
                     .retain(|id| list.upgrades.iter().any(|p| &p.id == id));
                 self.status
@@ -460,6 +477,8 @@ impl WpmApp {
                 );
             }
             (Request::Upgrade { package }, Ok(_)) => {
+                self.recently_upgraded
+                    .insert(package.id.clone(), package.available.clone());
                 if let Some(list) = &mut self.updates {
                     list.upgrades.retain(|p| p.id != package.id);
                     list.pinned.retain(|p| p.id != package.id);
@@ -524,6 +543,38 @@ impl WpmApp {
         }
     }
 
+    /// Erscheint ein gerade erfolgreich aktualisiertes Paket mit derselben
+    /// Version erneut, ist das Update meist noch nicht aktiv (z. B. MSIX-Pakete,
+    /// solange die Anwendung läuft) oder winget erkennt die Version falsch.
+    fn report_pending_upgrades(&mut self, list: &UpgradeList) {
+        let pending: Vec<&str> = list
+            .upgrades
+            .iter()
+            .chain(&list.pinned)
+            .filter(|p| self.recently_upgraded.get(&p.id) == Some(&p.available))
+            .map(|p| p.name.as_str())
+            .collect();
+        self.recently_upgraded.clear();
+        if !pending.is_empty() {
+            let names = pending.join(", ");
+            self.notices.push(Notice {
+                details: "winget meldet die Installation als erfolgreich, aktiviert die neue Version \
+                          aber erst, wenn die Anwendung (und ggf. ihr Hintergrunddienst) beendet ist \
+                          oder Windows neu gestartet wurde. Bleibt das Update danach weiter stehen, \
+                          erkennt winget die Version falsch – dann „Anheften“, besonders bei \
+                          Programmen, die sich selbst aktualisieren."
+                    .into(),
+                ..Notice::new(
+                    NoticeKind::Info,
+                    format!(
+                        "{names}: Update installiert, aber noch nicht aktiv – Anwendung schließen \
+                         oder Windows neu starten."
+                    ),
+                )
+            });
+        }
+    }
+
     /// Übernimmt geänderte Einstellungen: speichern, Autostart, Theme.
     fn settings_changed(&mut self, ctx: &egui::Context, before: &Settings) {
         let autostart_changed = self.settings.autostart != before.autostart;
@@ -533,7 +584,8 @@ impl WpmApp {
         {
             // Die Aufgabenplanung (Start ohne Nachfrage) lässt sich nur mit
             // Adminrechten einrichten; bis dahin dient der Run-Schlüssel.
-            let use_task = self.settings.run_as_admin && self.elevated;
+            let use_task =
+                elevated_task_possible(&self.settings, self.elevated, self.other_account);
             let result = system::configure_autostart(self.settings.autostart, use_task);
             // Die Oberfläche zeigt, was tatsächlich eingetragen ist.
             self.settings.autostart = system::autostart_enabled();
@@ -542,7 +594,11 @@ impl WpmApp {
                     NoticeKind::Error,
                     format!("Autostart konnte nicht geändert werden: {e}"),
                 );
-            } else if self.settings.autostart && self.settings.run_as_admin && !self.elevated {
+            } else if self.settings.autostart
+                && self.settings.run_as_admin
+                && !self.elevated
+                && system::elevated_autostart_allowed()
+            {
                 self.notices.push(Notice {
                     admin_hint: true,
                     ..Notice::new(
@@ -819,6 +875,13 @@ impl eframe::App for WpmApp {
         self.details_window(&ctx);
         self.confirm_uninstall_dialog(&ctx);
     }
+}
+
+/// Autostart über die Aufgabenplanung (ohne Nachfrage beim Anmelden) nur im
+/// Administrator-Modus, mit Adminrechten des eigenen Kontos und wenn wpm.exe
+/// in einem geschützten Ordner liegt.
+fn elevated_task_possible(settings: &Settings, elevated: bool, other_account: bool) -> bool {
+    settings.run_as_admin && elevated && !other_account && system::elevated_autostart_allowed()
 }
 
 fn setup_style(ctx: &egui::Context) {

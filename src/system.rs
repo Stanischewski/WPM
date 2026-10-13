@@ -12,8 +12,8 @@ pub use imp::SingleInstance;
 mod imp {
     use std::ffi::{OsStr, OsString};
     use std::fs;
-    use std::io;
-    use std::os::windows::ffi::OsStrExt;
+    use std::io::{self, Write};
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use std::os::windows::process::CommandExt;
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
@@ -29,13 +29,18 @@ mod imp {
     use windows_sys::Win32::Security::{
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
     };
+    use windows_sys::Win32::System::Com::CoTaskMemFree;
     use windows_sys::Win32::System::Threading::{
         CreateMutexW, GetCurrentProcess, OpenProcessToken,
     };
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::Shell::{
+        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_System,
+        KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW,
+    };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL,
     };
+    use windows_sys::core::GUID;
     use winreg::RegKey;
     use winreg::enums::HKEY_CURRENT_USER;
 
@@ -84,7 +89,7 @@ mod imp {
 
     /// SID des angemeldeten Benutzers (z. B. `S-1-5-21-…`), eindeutiger als
     /// `DOMÄNE\Name` – auch bei Microsoft- und Entra-ID-Konten.
-    fn current_user_sid() -> Option<String> {
+    pub fn current_user_sid() -> Option<String> {
         with_process_token(|token| {
             let mut size = 0u32;
             // SAFETY: Erster Aufruf ohne Puffer ermittelt nur die nötige Größe.
@@ -242,64 +247,120 @@ mod imp {
 
     // --- Autostart über die Aufgabenplanung (mit höchsten Rechten) ---
 
-    /// Vollständiger Pfad, damit nicht versehentlich eine gleichnamige Datei
-    /// aus dem Programmordner gestartet wird.
-    fn schtasks_path() -> PathBuf {
-        let root = std::env::var_os("SystemRoot").unwrap_or_else(|| OsString::from(r"C:\Windows"));
-        Path::new(&root).join("System32").join("schtasks.exe")
-    }
-
-    fn schtasks(args: &[&OsStr]) -> io::Result<()> {
-        let output = Command::new(schtasks_path())
-            .args(args)
-            .stdin(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .output()?;
-        if output.status.success() {
-            return Ok(());
+    /// Pfad eines Systemordners (Known Folder), unabhängig von Umgebungsvariablen.
+    fn known_folder(id: &GUID) -> Option<PathBuf> {
+        let mut raw: *mut u16 = ptr::null_mut();
+        // SAFETY: `raw` erhält einen von der Shell allozierten String, der mit
+        // CoTaskMemFree freigegeben werden muss – laut Doku auch bei Fehlern.
+        unsafe {
+            let result =
+                SHGetKnownFolderPath(id, KF_FLAG_DEFAULT as u32, ptr::null_mut(), &mut raw);
+            let path = (result >= 0 && !raw.is_null()).then(|| {
+                let len = (0..).take_while(|&i| *raw.add(i) != 0).count();
+                PathBuf::from(OsString::from_wide(std::slice::from_raw_parts(raw, len)))
+            });
+            CoTaskMemFree(raw.cast());
+            path
         }
-        let text = if output.stderr.is_empty() {
-            &output.stdout
-        } else {
-            &output.stderr
-        };
-        let message = String::from_utf8_lossy(text).trim().to_string();
-        Err(io::Error::other(if message.is_empty() {
-            format!("schtasks beendet mit {}", output.status)
-        } else {
-            message
-        }))
     }
 
-    pub fn task_exists() -> bool {
-        schtasks(&["/Query".as_ref(), "/TN".as_ref(), TASK_NAME.as_ref()]).is_ok()
+    /// `schtasks.exe` aus System32 – nie eine gleichnamige Datei aus dem Programmordner.
+    fn schtasks_path() -> io::Result<PathBuf> {
+        known_folder(&FOLDERID_System)
+            .map(|dir| dir.join("schtasks.exe"))
+            .ok_or_else(|| io::Error::other("Systemordner nicht gefunden"))
+    }
+
+    /// Führt schtasks aus; mit `/HRESULT` ist der Exitcode ein HRESULT.
+    fn schtasks(args: &[&OsStr]) -> io::Result<Result<(), u32>> {
+        let output = Command::new(schtasks_path()?)
+            .args(args)
+            .arg("/HRESULT")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()?;
+        Ok(match output.code() {
+            Some(0) => Ok(()),
+            Some(code) => Err(code as u32),
+            None => Err(u32::MAX),
+        })
+    }
+
+    fn schtasks_error(action: &str, code: u32) -> io::Error {
+        let reason = match code {
+            0x8007_0005 => {
+                " – Zugriff verweigert, dafür sind Administratorrechte nötig".to_string()
+            }
+            _ => format!(" (Fehler 0x{code:08X})"),
+        };
+        io::Error::other(format!("Aufgabenplanung: {action} fehlgeschlagen{reason}"))
+    }
+
+    /// `HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND)`: Aufgabe gibt es nicht.
+    const TASK_NOT_FOUND: u32 = 0x8007_0002;
+
+    pub fn task_exists() -> io::Result<bool> {
+        match schtasks(&["/Query".as_ref(), "/TN".as_ref(), TASK_NAME.as_ref()])? {
+            Ok(()) => Ok(true),
+            Err(TASK_NOT_FOUND) => Ok(false),
+            Err(code) => Err(schtasks_error("Abfrage", code)),
+        }
+    }
+
+    /// Die Aufgabe startet WPM ohne Nachfrage mit Adminrechten. Das ist nur
+    /// vertretbar, wenn normale Programme die EXE nicht austauschen können –
+    /// also wenn sie unter „Programme“ liegt.
+    pub fn exe_in_protected_folder() -> bool {
+        let Ok(exe) = std::env::current_exe().and_then(fs::canonicalize) else {
+            return false;
+        };
+        let exe = PathBuf::from(exe.as_os_str().to_string_lossy().to_lowercase());
+        [FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86]
+            .iter()
+            .filter_map(known_folder)
+            .filter_map(|dir| fs::canonicalize(dir).ok())
+            .map(|dir| PathBuf::from(dir.as_os_str().to_string_lossy().to_lowercase()))
+            .any(|dir| exe.starts_with(dir))
     }
 
     pub fn create_task() -> io::Result<()> {
+        if !exe_in_protected_folder() {
+            return Err(io::Error::other(
+                "Autostart ohne Nachfrage ist nur möglich, wenn wpm.exe unter „Programme“ liegt.",
+            ));
+        }
         let exe = std::env::current_exe()?;
         let directory = exe.parent().map(Path::to_path_buf).unwrap_or_default();
-        let user = match (
-            current_user_sid(),
-            std::env::var("USERDOMAIN"),
-            std::env::var("USERNAME"),
-        ) {
-            (Some(sid), _, _) => sid,
-            (None, Ok(domain), Ok(name)) => format!(r"{domain}\{name}"),
-            (None, Err(_), Ok(name)) => name,
-            _ => return Err(io::Error::other("Benutzerkonto nicht ermittelbar")),
-        };
+        // Nur die SID aus dem eigenen Zugriffstoken – Umgebungsvariablen sind
+        // veränderbar und bei Entra-ID-Konten nicht eindeutig.
+        let user = current_user_sid()
+            .ok_or_else(|| io::Error::other("Benutzerkonto nicht ermittelbar"))?;
         let xml = super::task_xml(
             &user,
             &exe.display().to_string(),
             "--autostart",
             &directory.display().to_string(),
         );
-
-        // schtasks erwartet die XML-Datei als UTF-16 mit BOM.
         let mut bytes = vec![0xFF, 0xFE];
         bytes.extend(xml.encode_utf16().flat_map(u16::to_le_bytes));
-        let path = std::env::temp_dir().join(format!("wpm-autostart-{}.xml", std::process::id()));
-        fs::write(&path, bytes)?;
+
+        // Die Datei liegt direkt in ProgramData: Dort dürfen normale Programme
+        // von Administratoren angelegte Dateien weder ändern noch löschen.
+        // `create_new` verhindert, dass eine vorab angelegte Datei benutzt wird.
+        let folder = known_folder(&FOLDERID_ProgramData)
+            .ok_or_else(|| io::Error::other("ProgramData nicht gefunden"))?;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or_default();
+        let path = folder.join(format!("wpm-autostart-{}-{nanos}.xml", std::process::id()));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?
+            .write_all(&bytes)?;
         let result = schtasks(&[
             "/Create".as_ref(),
             "/TN".as_ref(),
@@ -309,11 +370,11 @@ mod imp {
             "/F".as_ref(),
         ]);
         let _ = fs::remove_file(&path);
-        result
+        result?.map_err(|code| schtasks_error("Einrichten", code))
     }
 
     pub fn delete_task() -> io::Result<()> {
-        if !task_exists() {
+        if !task_exists()? {
             return Ok(());
         }
         schtasks(&[
@@ -321,7 +382,8 @@ mod imp {
             "/TN".as_ref(),
             TASK_NAME.as_ref(),
             "/F".as_ref(),
-        ])
+        ])?
+        .map_err(|code| schtasks_error("Entfernen", code))
     }
 }
 
@@ -370,8 +432,16 @@ mod imp {
         Ok(())
     }
 
-    pub fn task_exists() -> bool {
+    pub fn task_exists() -> io::Result<bool> {
+        Ok(false)
+    }
+
+    pub fn exe_in_protected_folder() -> bool {
         false
+    }
+
+    pub fn current_user_sid() -> Option<String> {
+        None
     }
 
     pub fn create_task() -> io::Result<()> {
@@ -396,6 +466,11 @@ pub fn relaunch_elevated(args: &[String], window: Option<isize>) -> io::Result<(
     imp::relaunch_elevated(args, window)
 }
 
+/// SID des Benutzerkontos, unter dem WPM läuft (nur Windows).
+pub fn user_sid() -> Option<String> {
+    imp::current_user_sid()
+}
+
 /// Fensterhandle (HWND) des Hauptfensters, sofern unter Windows verfügbar.
 pub fn native_window(handle: &impl raw_window_handle::HasWindowHandle) -> Option<isize> {
     match handle.window_handle().ok()?.as_raw() {
@@ -414,7 +489,15 @@ pub fn notify(title: &str, body: &str) {
 
 /// Ist ein Autostart eingetragen (Run-Schlüssel oder Aufgabenplanung)?
 pub fn autostart_enabled() -> bool {
-    imp::run_entry_exists() || imp::task_exists()
+    imp::run_entry_exists() || imp::task_exists().unwrap_or(false)
+}
+
+/// Darf der Autostart mit Adminrechten (ohne Nachfrage) eingerichtet werden?
+/// Nur wenn wpm.exe in einem Ordner liegt, den normale Programme nicht
+/// verändern können – sonst ließe sich darüber Adminrechte erschleichen.
+pub fn elevated_autostart_allowed() -> bool {
+    static ALLOWED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ALLOWED.get_or_init(imp::exe_in_protected_folder)
 }
 
 /// Richtet den Autostart ein oder entfernt ihn. Vorhandene Einträge werden
@@ -490,7 +573,9 @@ fn xml_escape(text: &str) -> String {
 }
 
 /// Aufgabe für die Aufgabenplanung: beim Anmelden des Benutzers mit höchsten
-/// Rechten starten, auch im Akkubetrieb, ohne Zeitlimit.
+/// Rechten starten, auch im Akkubetrieb, ohne Zeitlimit, mit normaler
+/// Priorität (4). Manuelles Starten (`schtasks /Run`) ist gesperrt, damit
+/// andere Programme WPM nicht ohne Nachfrage mit Adminrechten starten können.
 #[cfg_attr(not(windows), allow(dead_code))]
 fn task_xml(user: &str, command: &str, arguments: &str, directory: &str) -> String {
     let (user, command, arguments, directory) = (
@@ -525,10 +610,10 @@ fn task_xml(user: &str, command: &str, arguments: &str, directory: &str) -> Stri
     <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
     <AllowHardTerminate>true</AllowHardTerminate>
     <StartWhenAvailable>false</StartWhenAvailable>
-    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <AllowStartOnDemand>false</AllowStartOnDemand>
     <Enabled>true</Enabled>
     <ExecutionTimeLimit>PT0S</ExecutionTimeLimit>
-    <Priority>5</Priority>
+    <Priority>4</Priority>
   </Settings>
   <Actions Context="Author">
     <Exec>

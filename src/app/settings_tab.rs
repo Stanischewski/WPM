@@ -71,6 +71,18 @@ impl WpmApp {
                              keine Nachfrage erscheint. Nur sinnvoll, wenn dein Benutzerkonto \
                              ein Administratorkonto ist.",
                         );
+                        if settings.run_as_admin
+                            && settings.autostart
+                            && !system::elevated_autostart_allowed()
+                        {
+                            hint(
+                                ui,
+                                "Hinweis: Ohne Nachfrage beim Anmelden geht es nur, wenn wpm.exe \
+                                 unter „C:\\Program Files“ liegt (z. B. C:\\Program Files\\WPM). \
+                                 Sonst könnten andere Programme die Datei austauschen und so \
+                                 Adminrechte erhalten. Bis dahin fragt Windows beim Anmelden nach.",
+                            );
+                        }
                         ui.horizontal(|ui| {
                             if elevated {
                                 ui.label(
