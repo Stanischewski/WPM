@@ -1,0 +1,6 @@
+# Statisch importierte DLLs nur aus System32 laden (Schutz vor untergeschobenen
+# DLLs im Programmordner, z. B. im Download-Ordner). Betrifft nur den
+# MSVC-Linker; zur Laufzeit ergänzt system::harden_dll_search() das für
+# nachgeladene DLLs.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]

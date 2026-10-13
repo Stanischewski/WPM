@@ -30,12 +30,16 @@ mod imp {
         GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TOKEN_USER, TokenElevation, TokenUser,
     };
     use windows_sys::Win32::System::Com::CoTaskMemFree;
+    use windows_sys::Win32::System::LibraryLoader::{
+        LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+    };
     use windows_sys::Win32::System::Threading::{
         CreateMutexW, GetCurrentProcess, OpenProcessToken,
     };
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_ProgramData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_System,
-        KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW,
+        FOLDERID_LocalAppData, FOLDERID_ProgramData, FOLDERID_ProgramFiles,
+        FOLDERID_ProgramFilesX86, FOLDERID_System, KF_FLAG_DEFAULT, SHGetKnownFolderPath,
+        ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         MB_ICONINFORMATION, MB_OK, MB_SETFOREGROUND, MessageBoxW, SW_SHOWNORMAL,
@@ -264,6 +268,15 @@ mod imp {
         }
     }
 
+    pub fn local_app_data() -> Option<PathBuf> {
+        known_folder(&FOLDERID_LocalAppData)
+    }
+
+    pub fn harden_dll_search() {
+        // SAFETY: Reiner Aufruf mit einer Konstante.
+        unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) };
+    }
+
     /// `schtasks.exe` aus System32 – nie eine gleichnamige Datei aus dem Programmordner.
     fn schtasks_path() -> io::Result<PathBuf> {
         known_folder(&FOLDERID_System)
@@ -444,6 +457,8 @@ mod imp {
         None
     }
 
+    pub fn harden_dll_search() {}
+
     pub fn create_task() -> io::Result<()> {
         Err(unsupported())
     }
@@ -464,6 +479,18 @@ pub fn is_elevated() -> bool {
 /// ist das Fensterhandle (HWND), damit die Nachfrage im Vordergrund erscheint.
 pub fn relaunch_elevated(args: &[String], window: Option<isize>) -> io::Result<()> {
     imp::relaunch_elevated(args, window)
+}
+
+/// Nachgeladene DLLs nur noch aus System32 laden, nie aus dem Programmordner
+/// (z. B. dem Download-Ordner, in dem eine untergeschobene DLL liegen könnte).
+pub fn harden_dll_search() {
+    imp::harden_dll_search();
+}
+
+/// `%LOCALAPPDATA%` über die Known-Folder-API, nicht über Umgebungsvariablen.
+#[cfg(windows)]
+pub fn local_app_data() -> Option<std::path::PathBuf> {
+    imp::local_app_data()
 }
 
 /// SID des Benutzerkontos, unter dem WPM läuft (nur Windows).

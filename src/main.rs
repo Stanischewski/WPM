@@ -23,6 +23,8 @@ const ELEVATED_FLAG: &str = "--elevated";
 const USER_SID_FLAG: &str = "--user-sid=";
 
 fn main() -> eframe::Result {
+    system::harden_dll_search();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     let has = |flag: &str| args.iter().any(|a| a == flag);
     let settings = Settings::load();
@@ -30,20 +32,10 @@ fn main() -> eframe::Result {
     let autostart = has("--autostart");
     let relaunched = has(ELEVATED_FLAG);
 
-    // Administrator-Modus: vor dem ersten Fenster mit Adminrechten neu starten.
-    // Lehnt man die Windows-Bestätigung ab, läuft WPM normal weiter.
-    let elevated = system::is_elevated();
-    let mut elevation_declined = false;
-    if settings.run_as_admin && !elevated && !relaunched && system::ELEVATION_SUPPORTED {
-        let mut elevated_args = args.clone();
-        elevated_args.extend(relaunch_flags());
-        match system::relaunch_elevated(&elevated_args, None) {
-            Ok(()) => return Ok(()),
-            Err(_) => elevation_declined = true,
-        }
-    }
     // Nur eine Instanz: Autostart und manueller Start sollen sich nicht doppeln.
-    // Nach einem Neustart mit Adminrechten kurz warten, bis die alte Instanz zu ist.
+    // Das wird *vor* einem Neustart mit Adminrechten geprüft, damit ein zweiter
+    // Start keine überflüssige Windows-Bestätigung zeigt. Der mit Adminrechten
+    // neu gestartete Prozess wartet kurz, bis die alte Instanz beendet ist.
     let _instance = if demo {
         None
     } else {
@@ -65,6 +57,20 @@ fn main() -> eframe::Result {
             }
         }
     };
+
+    // Administrator-Modus: vor dem ersten Fenster mit Adminrechten neu starten.
+    // Lehnt man die Windows-Bestätigung ab, läuft WPM normal weiter. Bei Erfolg
+    // endet dieser Prozess sofort und gibt damit die Einzelinstanz frei.
+    let elevated = system::is_elevated();
+    let mut elevation_declined = false;
+    if settings.run_as_admin && !elevated && !relaunched && system::ELEVATION_SUPPORTED {
+        let mut elevated_args = args.clone();
+        elevated_args.extend(relaunch_flags());
+        match system::relaunch_elevated(&elevated_args, None) {
+            Ok(()) => return Ok(()),
+            Err(_) => elevation_declined = true,
+        }
+    }
 
     // Gibt ein Standardbenutzer bei der Nachfrage die Zugangsdaten eines
     // anderen Kontos ein, läuft WPM unter diesem Konto.

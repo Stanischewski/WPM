@@ -579,6 +579,11 @@ impl WpmApp {
     fn settings_changed(&mut self, ctx: &egui::Context, before: &Settings) {
         let autostart_changed = self.settings.autostart != before.autostart;
         let admin_changed = self.settings.run_as_admin != before.run_as_admin;
+        if autostart_changed || admin_changed {
+            // Frühere Hinweise zum Administrator-Modus sind jetzt überholt.
+            self.notices
+                .retain(|n| !(n.kind == NoticeKind::Info && n.admin_hint));
+        }
         if system::AUTOSTART_SUPPORTED
             && (autostart_changed || (admin_changed && self.settings.autostart))
         {
@@ -684,8 +689,14 @@ impl WpmApp {
                 || n.admin_hint
                 || n.created.elapsed() < Duration::from_secs(8)
         });
-        if self.notices.len() > 4 {
-            self.notices.drain(..self.notices.len() - 4);
+        // Höchstens vier Meldungen; zuerst die ältesten, die keine Fehler sind.
+        while self.notices.len() > 4 {
+            let index = self
+                .notices
+                .iter()
+                .position(|n| n.kind != NoticeKind::Error)
+                .unwrap_or(0);
+            self.notices.remove(index);
         }
         if self
             .notices

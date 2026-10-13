@@ -57,7 +57,7 @@ impl Runner for WingetRunner {
         args: &[String],
         on_event: &mut dyn FnMut(OutputEvent),
     ) -> io::Result<CommandOutput> {
-        let mut cmd = Command::new(winget_program());
+        let mut cmd = Command::new(winget_program()?);
         cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -126,19 +126,44 @@ impl Runner for WingetRunner {
     }
 }
 
-/// Pfad zu winget. Unter Windows bevorzugt der App-Alias des App-Installers:
-/// Ein bloßes `winget` würde zuerst im Programmordner von WPM gesucht – mit
-/// Adminrechten wäre eine dort abgelegte fremde `winget.exe` gefährlich.
-fn winget_program() -> std::ffi::OsString {
-    #[cfg(windows)]
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-        let alias = std::path::Path::new(&local).join(r"Microsoft\WindowsApps\winget.exe");
-        // Der Alias ist ein Reparse-Point: nicht folgen, nur Existenz prüfen.
-        if std::fs::symlink_metadata(&alias).is_ok() {
-            return alias.into_os_string();
+/// Vollständiger Pfad zu winget. Ein bloßes `winget` würde zuerst im
+/// Programmordner von WPM gesucht – mit Adminrechten wäre eine dort abgelegte
+/// fremde `winget.exe` gefährlich. Bevorzugt wird der App-Alias des
+/// App-Installers, sonst `PATH` ohne Programmordner, aktuelles Verzeichnis
+/// und relative Einträge.
+#[cfg(windows)]
+fn winget_program() -> io::Result<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+
+    // Der Alias ist ein Reparse-Point: nicht folgen, nur Existenz prüfen.
+    let exists = |path: &Path| std::fs::symlink_metadata(path).is_ok();
+    if let Some(local) = crate::system::local_app_data() {
+        let alias = local.join(r"Microsoft\WindowsApps\winget.exe");
+        if exists(&alias) {
+            return Ok(alias);
         }
     }
-    "winget".into()
+    let normalize = |path: &Path| path.to_string_lossy().trim_end_matches('\\').to_lowercase();
+    let excluded: Vec<String> = [
+        std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(PathBuf::from)),
+        std::env::current_dir().ok(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(|dir| normalize(&dir))
+    .collect();
+    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .filter(|dir| dir.is_absolute() && !excluded.contains(&normalize(dir)))
+        .map(|dir| dir.join("winget.exe"))
+        .find(|candidate| exists(candidate))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "winget.exe nicht gefunden"))
+}
+
+#[cfg(not(windows))]
+fn winget_program() -> io::Result<std::path::PathBuf> {
+    Ok("winget".into())
 }
 
 /// Zerlegt einen Byte-Strom in Zeilen und `\r`-Zwischenstände.
