@@ -10,7 +10,12 @@ und 11. Ältere Versionen und Änderungen stehen unter
 > **„Der Computer wurde durch Windows geschützt“?** Die EXE ist nicht digital
 > signiert, deshalb warnt Windows SmartScreen beim ersten Start. Auf
 > **„Weitere Informationen“** und dann **„Trotzdem ausführen“** klicken. Auch
-> der Browser fragt beim Herunterladen eventuell nach – dann „Behalten“ wählen.
+> der Browser warnt eventuell, weil die Datei selten heruntergeladen wird –
+> dann die Datei in der Download-Liste behalten (in Edge: „…“ →
+> „Beibehalten“). Ist unter Windows 11 die **intelligente App-Steuerung**
+> (Smart App Control) aktiv, blockiert sie unsignierte Programme ohne
+> „Trotzdem ausführen“; dann lässt sich WPM nur starten, wenn man sie unter
+> *Windows-Sicherheit → App- & Browsersteuerung* ausschaltet.
 
 Eine einfache, schnelle Oberfläche für den Windows-Paketmanager
 [winget](https://learn.microsoft.com/windows/package-manager/winget/),
@@ -82,14 +87,16 @@ Zusätzlich baut die GitHub-Action `Build` bei jedem Push eine EXE – unter
 
 ### Neue Version veröffentlichen
 
-1. Version in `Cargo.toml` erhöhen und committen.
+1. Version in `Cargo.toml` erhöhen, einmal `cargo build` ausführen und
+   `Cargo.toml` und `Cargo.lock` auf `main` committen.
 2. Tag `v<Version>` pushen (z. B. `git tag v0.3.0 && git push origin v0.3.0`)
-   – oder unter *Actions → Build → Run workflow* „Release veröffentlichen“
-   ankreuzen.
+   – oder unter *Actions → Build → Run workflow* den Branch `main` wählen und
+   „Release veröffentlichen“ ankreuzen.
 
 Die Action prüft, testet und baut die EXE und veröffentlicht sie als Release
 `v<Version>` (mit SHA-256-Prüfsumme). Der Download-Link oben zeigt danach
-automatisch auf die neue Version.
+automatisch auf die neue Version. Gibt es das Release schon, bricht sie ab,
+statt es zu überschreiben.
 
 ### Kommandozeilenoptionen
 
@@ -259,5 +266,5 @@ keine Nachfrage beim Anmelden).
 
 ## Lizenz
 
-[MIT](LICENSE) – frei nutzbar, veränderbar und weitergebbar, auch kommerziell;
-ohne Gewähr.
+[MIT](LICENSE) – darf frei genutzt, verändert und weitergegeben werden, auch
+kommerziell, solange der Lizenzhinweis erhalten bleibt; ohne Gewähr.

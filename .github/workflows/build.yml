@@ -30,6 +30,18 @@ jobs:
         run: cargo test
       - name: Release-Build
         run: cargo build --release
+      - name: Ohne VC++-Laufzeit lauffähig?
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          $dlls = & $dumpbin /nologo /dependents target\release\wpm.exe |
+            Where-Object { $_ -match '\.dll\s*$' } | ForEach-Object { $_.Trim() }
+          "Benötigte DLLs: $($dlls -join ', ')"
+          if (-not $dlls) { Write-Error "dumpbin hat keine DLL-Liste geliefert" }
+          if ($dlls -match 'vcruntime') {
+            Write-Error "wpm.exe benötigt die VC++-Laufzeit – crt-static in .cargo/config.toml prüfen"
+          }
       - uses: actions/upload-artifact@v4
         with:
           name: wpm-windows-x64
@@ -51,8 +63,14 @@ jobs:
         run: |
           version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)
           tag="v$version"
-          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
-            echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in Cargo.toml"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            if [[ "$GITHUB_REF_NAME" != "$tag" ]]; then
+              echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in Cargo.toml"
+              exit 1
+            fi
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            # Sonst würde „Run workflow“ die EXE eines bestehenden Releases ersetzen.
+            echo "::error::$tag gibt es schon – zuerst die Version in Cargo.toml erhöhen"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -63,7 +81,7 @@ jobs:
       - name: Prüfsumme
         working-directory: dist
         run: sha256sum wpm.exe > wpm.exe.sha256
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: WPM ${{ steps.version.outputs.tag }}
@@ -73,6 +91,8 @@ jobs:
             dist/wpm.exe.sha256
           generate_release_notes: true
           body: |
-            **Download:** `wpm.exe` unten unter *Assets* herunterladen und doppelklicken – keine Installation nötig. Voraussetzung: Windows 10/11 mit winget (App-Installer).
+            **Download:** `wpm.exe` unten unter *Assets* herunterladen und doppelklicken – keine Installation nötig. Voraussetzung: Windows 10/11 mit winget (App-Installer). Funktionen und Anleitung: siehe [README](https://github.com/${{ github.repository }}#readme).
 
             Die EXE ist nicht digital signiert. Meldet Windows „Der Computer wurde durch Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
+
+            Prüfsumme kontrollieren (optional): in PowerShell `Get-FileHash .\wpm.exe` ausführen und mit `wpm.exe.sha256` vergleichen.

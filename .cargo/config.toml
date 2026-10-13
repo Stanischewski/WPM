@@ -2,5 +2,9 @@
 # DLLs im Programmordner, z. B. im Download-Ordner). Betrifft nur den
 # MSVC-Linker; zur Laufzeit ergänzt system::harden_dll_search() das für
 # nachgeladene DLLs.
+#
+# Die C-Laufzeit wird statisch eingebunden (crt-static): wpm.exe braucht so
+# keine VC++-Laufzeit (vcruntime140.dll), die auf frischen Windows-Systemen
+# fehlt – herunterladen und starten genügt.
 [target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "link-arg=/DEPENDENTLOADFLAG:0x800"]
+rustflags = ["-C", "link-arg=/DEPENDENTLOADFLAG:0x800", "-C", "target-feature=+crt-static"]
