@@ -20,16 +20,21 @@ use crate::scheduler;
 use crate::settings::Settings;
 use crate::system;
 use crate::winget::demo::DemoRunner;
-use crate::winget::{Details, Options, Package, Pin, Request, Response, Source, UpgradeList};
+use crate::winget::{
+    Details, Failure, Options, Package, Pin, Request, Response, Source, UpgradeList,
+};
 use crate::worker::{JobId, Worker, WorkerEvent};
 
 const MAX_LOG_LINES: usize = 5000;
-const CANCELLED: &str = "Abgebrochen";
 
 pub struct StartupFlags {
     pub demo: bool,
     /// Vom Autostart gestartet bzw. ausdrücklich minimiert gewünscht.
     pub minimized: bool,
+    /// WPM läuft mit Administratorrechten.
+    pub elevated: bool,
+    /// Administrator-Modus ist eingestellt, die Windows-Bestätigung wurde aber abgelehnt.
+    pub elevation_declined: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -46,7 +51,7 @@ enum PackageStatus {
     Queued,
     Running,
     Done(String),
-    Failed(String),
+    Failed(Failure),
 }
 
 struct QueuedJob {
@@ -64,13 +69,31 @@ enum NoticeKind {
 
 struct Notice {
     kind: NoticeKind,
-    text: String,
+    title: String,
+    /// Aufklappbare Zusatzinformationen (z. B. Ausgabe von winget).
+    details: String,
+    expanded: bool,
+    /// Knopf „Als Administrator neu starten“ anbieten.
+    admin_hint: bool,
     created: Instant,
+}
+
+impl Notice {
+    fn new(kind: NoticeKind, title: impl Into<String>) -> Self {
+        Self {
+            kind,
+            title: title.into(),
+            details: String::new(),
+            expanded: false,
+            admin_hint: false,
+            created: Instant::now(),
+        }
+    }
 }
 
 struct DetailsView {
     package: Package,
-    result: Option<Result<Details, String>>,
+    result: Option<Result<Details, Failure>>,
 }
 
 /// Benutzeraktionen aus den Tabellen; werden nach dem Zeichnen ausgeführt.
@@ -112,6 +135,9 @@ pub struct WpmApp {
 
     needs_refresh: bool,
     focus_search: bool,
+    elevated: bool,
+    /// HWND des Hauptfensters (für die Windows-Bestätigung im Vordergrund).
+    window: Option<isize>,
     start_minimized: bool,
     first_frame: bool,
     demo: bool,
@@ -128,12 +154,16 @@ impl WpmApp {
         setup_style(ctx);
         ctx.set_theme(settings.theme.to_egui());
 
-        // Die Registry ist maßgeblich; ein vorhandener Eintrag wird mit dem
-        // aktuellen Pfad erneuert, falls die EXE verschoben wurde.
+        // Maßgeblich ist, was tatsächlich eingetragen ist. Ein vorhandener
+        // Eintrag wird mit dem aktuellen Pfad erneuert (falls die EXE verschoben
+        // wurde) und auf die passende Variante umgestellt: Aufgabenplanung im
+        // Administrator-Modus, sonst der Run-Schlüssel. Ohne Adminrechte bleibt
+        // eine vorhandene Aufgabe unangetastet (sie lässt sich dann nicht ändern).
         if system::AUTOSTART_SUPPORTED {
             settings.autostart = system::autostart_enabled();
-            if settings.autostart {
-                let _ = system::set_autostart(true);
+            let use_task = settings.run_as_admin && flags.elevated;
+            if settings.autostart && (use_task || !settings.run_as_admin) {
+                let _ = system::configure_autostart(true, use_task);
             }
         }
 
@@ -174,12 +204,23 @@ impl WpmApp {
             notices: Vec::new(),
             needs_refresh: false,
             focus_search: false,
+            elevated: flags.elevated,
+            window: system::native_window(cc),
             start_minimized: flags.minimized,
             first_frame: true,
             demo: flags.demo,
             window_title: String::new(),
         };
 
+        if flags.elevation_declined {
+            app.notices.push(Notice {
+                admin_hint: true,
+                ..Notice::new(
+                    NoticeKind::Info,
+                    "Die Windows-Bestätigung wurde abgelehnt – WPM läuft diesmal ohne Administratorrechte.",
+                )
+            });
+        }
         app.submit(Request::Version);
         if app.settings.check_on_startup {
             let notify = flags.minimized && app.settings.notify;
@@ -219,12 +260,39 @@ impl WpmApp {
         self.queue.iter().any(|job| predicate(&job.request))
     }
 
-    fn notice(&mut self, kind: NoticeKind, text: impl Into<String>) {
+    fn notice(&mut self, kind: NoticeKind, title: impl Into<String>) {
+        self.notices.push(Notice::new(kind, title));
+    }
+
+    fn notice_failure(&mut self, label: &str, failure: &Failure) {
         self.notices.push(Notice {
-            kind,
-            text: text.into(),
-            created: Instant::now(),
+            details: failure.details.clone(),
+            admin_hint: failure.needs_admin,
+            ..Notice::new(
+                NoticeKind::Error,
+                format!("{label} fehlgeschlagen: {}", failure.summary),
+            )
         });
+    }
+
+    /// Startet WPM mit Administratorrechten neu (Windows fragt einmal nach).
+    fn restart_elevated(&mut self, ctx: &egui::Context) {
+        let mut args = vec!["--elevated".to_string()];
+        if self.demo {
+            args.push("--demo".into());
+        }
+        match system::relaunch_elevated(&args, self.window) {
+            Ok(()) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Err(e) => self.notice(
+                NoticeKind::Error,
+                format!("Neustart mit Administratorrechten nicht möglich: {e}"),
+            ),
+        }
+    }
+
+    /// Ein Neustart verwirft laufende Vorgänge, deshalb nur im Leerlauf.
+    fn can_restart_elevated(&self) -> bool {
+        system::ELEVATION_SUPPORTED && !self.elevated && self.queue.is_empty()
     }
 
     fn installed_ids(&self) -> HashSet<&str> {
@@ -325,15 +393,15 @@ impl WpmApp {
         &mut self,
         ctx: &egui::Context,
         request: Request,
-        result: Result<Response, String>,
+        result: Result<Response, Failure>,
     ) {
         if let Some(package_id) = request.package_id() {
             let status = match &result {
                 Ok(Response::Done(Some(note))) => Some(PackageStatus::Done(note.clone())),
                 Ok(_) => Some(PackageStatus::Done("Erledigt".into())),
                 // Abgebrochen ist kein Fehler: Zeile wieder normal anzeigen.
-                Err(e) if e == CANCELLED => None,
-                Err(e) => Some(PackageStatus::Failed(e.clone())),
+                Err(failure) if failure.cancelled => None,
+                Err(failure) => Some(PackageStatus::Failed(failure.clone())),
             };
             match status {
                 Some(status) => self.status.insert(package_id.to_string(), status),
@@ -353,16 +421,16 @@ impl WpmApp {
                 if let Some(view) = self.details.as_mut().filter(|v| v.package.id == id) {
                     view.result = Some(result.and_then(|r| match r {
                         Response::Details(details) => Ok(details),
-                        _ => Err("Unerwartete Antwort".into()),
+                        _ => Err(Failure::new("Unerwartete Antwort")),
                     }));
                 }
             }
             (Request::Version, Ok(Response::Version(version))) => {
                 self.winget_version = Some(Ok(version));
             }
-            (Request::Version, Err(e)) => {
-                self.winget_version = Some(Err(e.clone()));
-                self.notice(NoticeKind::Error, e);
+            (Request::Version, Err(failure)) => {
+                self.winget_version = Some(Err(failure.summary.clone()));
+                self.notice_failure("winget-Version abfragen", &failure);
             }
             (Request::ListInstalled, Ok(Response::Installed(mut packages))) => {
                 packages.sort_by_cached_key(|p| p.name.to_lowercase());
@@ -445,32 +513,55 @@ impl WpmApp {
             (Request::Import { .. }, Ok(_)) => {
                 self.notice(NoticeKind::Success, "Import abgeschlossen.");
             }
-            (request, Err(e)) if e == CANCELLED => {
+            (request, Err(failure)) if failure.cancelled => {
                 self.notice(
                     NoticeKind::Info,
                     format!("{}: abgebrochen", request.label()),
                 );
             }
-            (request, Err(e)) => {
-                self.notice(
-                    NoticeKind::Error,
-                    format!("{} fehlgeschlagen:\n{e}", request.label()),
-                );
-            }
+            (request, Err(failure)) => self.notice_failure(&request.label(), &failure),
             (_, Ok(_)) => {}
         }
     }
 
     /// Übernimmt geänderte Einstellungen: speichern, Autostart, Theme.
     fn settings_changed(&mut self, ctx: &egui::Context, before: &Settings) {
-        if self.settings.autostart != before.autostart
-            && let Err(e) = system::set_autostart(self.settings.autostart)
+        let autostart_changed = self.settings.autostart != before.autostart;
+        let admin_changed = self.settings.run_as_admin != before.run_as_admin;
+        if system::AUTOSTART_SUPPORTED
+            && (autostart_changed || (admin_changed && self.settings.autostart))
         {
-            self.settings.autostart = before.autostart;
-            self.notice(
-                NoticeKind::Error,
-                format!("Autostart konnte nicht geändert werden: {e}"),
-            );
+            // Die Aufgabenplanung (Start ohne Nachfrage) lässt sich nur mit
+            // Adminrechten einrichten; bis dahin dient der Run-Schlüssel.
+            let use_task = self.settings.run_as_admin && self.elevated;
+            let result = system::configure_autostart(self.settings.autostart, use_task);
+            // Die Oberfläche zeigt, was tatsächlich eingetragen ist.
+            self.settings.autostart = system::autostart_enabled();
+            if let Err(e) = result {
+                self.notice(
+                    NoticeKind::Error,
+                    format!("Autostart konnte nicht geändert werden: {e}"),
+                );
+            } else if self.settings.autostart && self.settings.run_as_admin && !self.elevated {
+                self.notices.push(Notice {
+                    admin_hint: true,
+                    ..Notice::new(
+                        NoticeKind::Info,
+                        "Autostart ist eingerichtet. Damit beim Anmelden keine Windows-Bestätigung \
+                         erscheint, WPM einmal als Administrator neu starten.",
+                    )
+                });
+            }
+        }
+        if admin_changed && self.settings.run_as_admin && !self.elevated && !self.settings.autostart
+        {
+            self.notices.push(Notice {
+                admin_hint: true,
+                ..Notice::new(
+                    NoticeKind::Info,
+                    "Der Administrator-Modus gilt ab dem nächsten Start von WPM.",
+                )
+            });
         }
         if self.settings.theme != before.theme {
             ctx.set_theme(self.settings.theme.to_egui());
@@ -533,21 +624,31 @@ impl WpmApp {
 
     fn notices_ui(&mut self, ui: &mut egui::Ui) {
         self.notices.retain(|n| {
-            n.kind == NoticeKind::Error || n.created.elapsed() < Duration::from_secs(8)
+            n.kind == NoticeKind::Error
+                || n.admin_hint
+                || n.created.elapsed() < Duration::from_secs(8)
         });
         if self.notices.len() > 4 {
             self.notices.drain(..self.notices.len() - 4);
         }
-        if self.notices.iter().any(|n| n.kind != NoticeKind::Error) {
+        if self
+            .notices
+            .iter()
+            .any(|n| n.kind != NoticeKind::Error && !n.admin_hint)
+        {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
+
+        let can_restart = self.can_restart_elevated();
         let mut dismissed = None;
-        for (index, notice) in self.notices.iter().enumerate() {
+        let mut restart = false;
+        for (index, notice) in self.notices.iter_mut().enumerate() {
             let (icon, color) = match notice.kind {
                 NoticeKind::Info => ("ℹ", ui.visuals().hyperlink_color),
-                NoticeKind::Success => ("✔", egui::Color32::from_rgb(60, 160, 80)),
+                NoticeKind::Success => ("✔", widgets::GREEN),
                 NoticeKind::Error => ("✖", ui.visuals().error_fg_color),
             };
+            let show_admin = notice.admin_hint && system::ELEVATION_SUPPORTED && !self.elevated;
             egui::Frame::new()
                 .fill(color.gamma_multiply(0.12))
                 .stroke(egui::Stroke::new(1.0, color.gamma_multiply(0.5)))
@@ -556,17 +657,63 @@ impl WpmApp {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(icon).color(color).strong());
-                        ui.add(egui::Label::new(&notice.text).wrap());
+                        // Erst die Knöpfe rechts, dann der Text im verbleibenden Platz,
+                        // damit lange Meldungen umbrechen statt die Knöpfe zu überdecken.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                             if ui.small_button("✖").on_hover_text("Schließen").clicked() {
                                 dismissed = Some(index);
                             }
+                            if !notice.details.is_empty() {
+                                let label = if notice.expanded {
+                                    "Details ausblenden"
+                                } else {
+                                    "Details"
+                                };
+                                if ui.small_button(label).clicked() {
+                                    notice.expanded = !notice.expanded;
+                                }
+                            }
+                            if show_admin
+                                && ui
+                                    .add_enabled(
+                                        can_restart,
+                                        egui::Button::new("🛡 Als Administrator neu starten")
+                                            .small(),
+                                    )
+                                    .on_hover_text(
+                                        "Windows fragt dann einmal nach – danach laufen alle \
+                                         Installer ohne weitere Bestätigung.",
+                                    )
+                                    .on_disabled_hover_text(
+                                        "Erst möglich, wenn keine Vorgänge mehr laufen \
+                                         (oder nach „Abbrechen“).",
+                                    )
+                                    .clicked()
+                            {
+                                restart = true;
+                            }
+                            ui.with_layout(
+                                egui::Layout::left_to_right(egui::Align::TOP).with_main_wrap(true),
+                                |ui| {
+                                    ui.add(egui::Label::new(&notice.title).wrap());
+                                },
+                            );
                         });
                     });
+                    if notice.expanded {
+                        ui.add(
+                            egui::Label::new(RichText::new(&notice.details).monospace().size(11.5))
+                                .wrap()
+                                .selectable(true),
+                        );
+                    }
                 });
         }
         if let Some(index) = dismissed {
             self.notices.remove(index);
+        }
+        if restart {
+            self.restart_elevated(ui.ctx());
         }
     }
 
@@ -596,6 +743,21 @@ impl WpmApp {
             } else {
                 ui.label("Bereit");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if self.elevated {
+                        ui.label(RichText::new("🛡 Administrator").weak())
+                            .on_hover_text("WPM läuft mit Administratorrechten.");
+                    } else if self.can_restart_elevated()
+                        && ui
+                            .small_button("🛡 Als Administrator neu starten")
+                            .on_hover_text(
+                                "Windows fragt einmal nach – danach laufen alle Installer \
+                                 ohne weitere Bestätigung.",
+                            )
+                            .clicked()
+                    {
+                        let ctx = ui.ctx().clone();
+                        self.restart_elevated(&ctx);
+                    }
                     match &self.winget_version {
                         Some(Ok(version)) => {
                             ui.label(RichText::new(format!("winget {version}")).weak())

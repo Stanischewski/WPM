@@ -4125,16 +4125,18 @@ checksum = "f17a85883d4e6d00e8a97c586de764dabcc06133f7f1d55dce5cdc070ad7fe59"
 
 [[package]]
 name = "wpm"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "dirs",
  "eframe",
  "egui_extras",
  "notify-rust",
+ "raw-window-handle",
  "rfd",
  "serde",
  "serde_json",
  "unicode-width",
+ "windows-sys 0.61.2",
  "winreg",
 ]
 

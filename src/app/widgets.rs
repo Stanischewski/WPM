@@ -50,9 +50,19 @@ pub fn status(ui: &mut Ui, status: Option<&PackageStatus>) -> bool {
                 .on_hover_text(message);
             true
         }
-        Some(PackageStatus::Failed(message)) => {
+        Some(PackageStatus::Failed(failure)) => {
+            let mut text = failure.full_text();
+            if failure.needs_admin
+                && crate::system::ELEVATION_SUPPORTED
+                && !crate::system::is_elevated()
+            {
+                text.push_str(
+                    "\n\nTipp: Mit Administratorrechten (siehe Einstellungen) entfallen \
+                     die Windows-Bestätigungen.",
+                );
+            }
             ui.label(RichText::new("✖ Fehler").color(ui.visuals().error_fg_color))
-                .on_hover_text(message);
+                .on_hover_text(text);
             true
         }
         None => true,

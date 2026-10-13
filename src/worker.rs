@@ -14,7 +14,7 @@ use eframe::egui;
 
 use crate::runner::{OutputEvent, Runner};
 use crate::system;
-use crate::winget::{Options, Request, Response, UpgradeList};
+use crate::winget::{Failure, Options, Request, Response, UpgradeList};
 
 pub type JobId = u64;
 
@@ -40,7 +40,7 @@ pub enum WorkerEvent {
     Finished {
         id: JobId,
         request: Request,
-        result: Result<Response, String>,
+        result: Result<Response, Failure>,
     },
 }
 
@@ -103,7 +103,7 @@ impl Worker {
             .spawn(move || {
                 let mut notified = HashSet::new();
                 for job in job_rx {
-                    let send = |event| {
+                    let send = |event: WorkerEvent| {
                         let _ = event_tx.send(event);
                         ctx.request_repaint();
                     };
@@ -111,14 +111,14 @@ impl Worker {
                         send(WorkerEvent::Finished {
                             id: job.id,
                             request: job.request,
-                            result: Err("Abgebrochen".into()),
+                            result: Err(Failure::cancelled()),
                         });
                         continue;
                     }
                     send(WorkerEvent::Started { id: job.id });
                     let mut result = execute(thread_runner.as_ref(), &job, &send);
                     if job.generation < generation.load(Ordering::SeqCst) {
-                        result = Err("Abgebrochen".into());
+                        result = Err(Failure::cancelled());
                     }
                     if let (Request::CheckUpdates { .. }, Ok(Response::Updates(list))) =
                         (&job.request, &result)
@@ -150,7 +150,11 @@ impl Worker {
     }
 }
 
-fn execute(runner: &dyn Runner, job: &Job, send: &dyn Fn(WorkerEvent)) -> Result<Response, String> {
+fn execute(
+    runner: &dyn Runner,
+    job: &Job,
+    send: &dyn Fn(WorkerEvent),
+) -> Result<Response, Failure> {
     let args = job.request.args(&job.options);
     send(WorkerEvent::Log(format!("> winget {}", quote_args(&args))));
     let output = runner
@@ -159,16 +163,16 @@ fn execute(runner: &dyn Runner, job: &Job, send: &dyn Fn(WorkerEvent)) -> Result
             OutputEvent::Progress(text) => send(WorkerEvent::Progress(text)),
         })
         .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
+            Failure::new(if e.kind() == std::io::ErrorKind::NotFound {
                 "winget wurde nicht gefunden. Bitte den „App-Installer“ aus dem Microsoft Store \
                  installieren oder aktualisieren."
                     .to_string()
             } else {
                 format!("winget konnte nicht gestartet werden: {e}")
-            }
+            })
         })?;
     if output.exit_code.is_none() {
-        return Err("Abgebrochen".into());
+        return Err(Failure::cancelled());
     }
     job.request.interpret(&output)
 }

@@ -456,6 +456,16 @@ impl DemoRunner {
                 if !self.sleep(900) {
                     return None;
                 }
+                // Systemweite Installer brauchen eine Windows-Bestätigung; ohne
+                // Adminrechte simuliert die Demo, dass sie abgelehnt wurde.
+                if entry.id.starts_with("Microsoft.VCRedist") && !crate::system::is_elevated() {
+                    return Some(Reply {
+                        text: "Installer failed with exit code: 1602\n\
+                               Installer log is available at: C:\\Users\\demo\\AppData\\Local\\Temp\\vcredist.log\n"
+                            .into(),
+                        code: super::INSTALL_CANCELLED_BY_USER as i32,
+                    });
+                }
                 state = self.state.lock().unwrap();
                 match find_index(&state.installed, args) {
                     Some(i) => {
@@ -614,7 +624,7 @@ mod tests {
     use crate::settings::{InstallMode, Scope};
     use crate::winget::{Options, Request, Response};
 
-    fn run(runner: &DemoRunner, request: &Request) -> Result<Response, String> {
+    fn run(runner: &DemoRunner, request: &Request) -> Result<Response, crate::winget::Failure> {
         let options = Options {
             mode: InstallMode::Silent,
             scope: Scope::Any,

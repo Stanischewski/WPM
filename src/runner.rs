@@ -57,7 +57,7 @@ impl Runner for WingetRunner {
         args: &[String],
         on_event: &mut dyn FnMut(OutputEvent),
     ) -> io::Result<CommandOutput> {
-        let mut cmd = Command::new("winget");
+        let mut cmd = Command::new(winget_program());
         cmd.args(args)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
@@ -124,6 +124,21 @@ impl Runner for WingetRunner {
             let _ = child.kill();
         }
     }
+}
+
+/// Pfad zu winget. Unter Windows bevorzugt der App-Alias des App-Installers:
+/// Ein bloßes `winget` würde zuerst im Programmordner von WPM gesucht – mit
+/// Adminrechten wäre eine dort abgelegte fremde `winget.exe` gefährlich.
+fn winget_program() -> std::ffi::OsString {
+    #[cfg(windows)]
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        let alias = std::path::Path::new(&local).join(r"Microsoft\WindowsApps\winget.exe");
+        // Der Alias ist ein Reparse-Point: nicht folgen, nur Existenz prüfen.
+        if std::fs::symlink_metadata(&alias).is_ok() {
+            return alias.into_os_string();
+        }
+    }
+    "winget".into()
 }
 
 /// Zerlegt einen Byte-Strom in Zeilen und `\r`-Zwischenstände.

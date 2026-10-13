@@ -32,6 +32,7 @@ fn hint(ui: &mut egui::Ui, text: &str) {
 impl WpmApp {
     pub(super) fn settings_tab(&mut self, ui: &mut egui::Ui) {
         let mut requests = Vec::new();
+        let mut restart = false;
 
         egui::ScrollArea::vertical()
             .id_salt("settings")
@@ -39,6 +40,8 @@ impl WpmApp {
             .show(ui, |ui| {
             ui.set_max_width(760.0);
 
+            let elevated = self.elevated;
+            let can_restart = self.can_restart_elevated();
             section(ui, "Allgemein", |ui| {
                 let settings = &mut self.settings;
                 ui.add_enabled_ui(system::AUTOSTART_SUPPORTED, |ui| {
@@ -55,6 +58,51 @@ impl WpmApp {
                 })
                 .response
                 .on_disabled_hover_text("Nur unter Windows verfügbar");
+
+                ui.add_space(4.0);
+                ui.add_enabled_ui(system::ELEVATION_SUPPORTED, |ui| {
+                    ui.checkbox(&mut settings.run_as_admin, "Mit Administratorrechten ausführen");
+                    ui.indent("admin_options", |ui| {
+                        hint(
+                            ui,
+                            "Windows fragt dann einmal beim Start von WPM nach – statt bei jedem \
+                             einzelnen Installer. Zusammen mit „Mit Windows starten“ richtet WPM \
+                             eine Aufgabe in der Aufgabenplanung ein, sodass auch beim Anmelden \
+                             keine Nachfrage erscheint. Nur sinnvoll, wenn dein Benutzerkonto \
+                             ein Administratorkonto ist.",
+                        );
+                        ui.horizontal(|ui| {
+                            if elevated {
+                                ui.label(
+                                    RichText::new("🛡 WPM läuft gerade mit Administratorrechten.")
+                                        .weak(),
+                                );
+                            } else {
+                                ui.label(
+                                    RichText::new("WPM läuft gerade ohne Administratorrechte.")
+                                        .weak(),
+                                );
+                                if ui
+                                    .add_enabled(
+                                        can_restart,
+                                        egui::Button::new("🛡 Jetzt als Administrator neu starten")
+                                            .small(),
+                                    )
+                                    .on_disabled_hover_text(
+                                        "Erst möglich, wenn keine Vorgänge mehr laufen.",
+                                    )
+                                    .clicked()
+                                {
+                                    restart = true;
+                                }
+                            }
+                        });
+                    });
+                })
+                .response
+                .on_disabled_hover_text("Nur unter Windows verfügbar");
+
+                ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.label("Darstellung:");
                     combo(ui, "theme", &mut settings.theme, &Theme::ALL, Theme::label);
@@ -110,6 +158,12 @@ impl WpmApp {
                     });
                 ui.checkbox(&mut settings.confirm_uninstall, "Vor dem Deinstallieren nachfragen");
                 ui.add_space(4.0);
+                hint(
+                    ui,
+                    "Im Modus „Still“ erscheinen kaum Installer-Fenster. Einzelne Installer zeigen \
+                     trotzdem ein Fenster oder starten das Programm nach dem Update neu. \
+                     Windows-Bestätigungen (UAC) vermeidet nur der Administrator-Modus.",
+                );
                 hint(
                     ui,
                     "Lizenz- und Quellvereinbarungen werden automatisch akzeptiert \
@@ -221,6 +275,10 @@ impl WpmApp {
 
         for request in requests {
             self.submit(request);
+        }
+        if restart {
+            let ctx = ui.ctx().clone();
+            self.restart_elevated(&ctx);
         }
     }
 }

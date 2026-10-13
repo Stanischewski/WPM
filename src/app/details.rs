@@ -27,8 +27,8 @@ impl WpmApp {
                             ui.label("Lade Details …");
                         });
                     }
-                    Some(Err(e)) => {
-                        ui.colored_label(ui.visuals().error_fg_color, e);
+                    Some(Err(failure)) => {
+                        ui.colored_label(ui.visuals().error_fg_color, failure.full_text());
                     }
                     Some(Ok(details)) => {
                         ui.label(RichText::new(&details.title).strong());

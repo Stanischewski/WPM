@@ -127,6 +127,12 @@ pub const NO_APPLICATIONS_FOUND: u32 = 0x8A15_0014;
 pub const UPDATE_NOT_APPLICABLE: u32 = 0x8A15_002B;
 pub const REBOOT_REQUIRED_TO_FINISH: u32 = 0x8A15_0109;
 pub const REBOOT_INITIATED: u32 = 0x8A15_010B;
+pub const INSTALL_CANCELLED_BY_USER: u32 = 0x8A15_010C;
+pub const COMMAND_REQUIRES_ADMIN: u32 = 0x8A15_0019;
+/// `HRESULT_FROM_WIN32(ERROR_ELEVATION_REQUIRED)` (Win32-Fehler 740).
+pub const ERROR_ELEVATION_REQUIRED: u32 = 0x8007_02E4;
+/// MSIX-Paket, dessen Aktualisierung Adminrechte braucht.
+pub const MSIX_REQUIRES_ADMIN: u32 = 0x8007_3D28;
 
 const ACCEPT_SOURCE: &str = "--accept-source-agreements";
 const ACCEPT_PACKAGE: &str = "--accept-package-agreements";
@@ -254,12 +260,12 @@ impl Request {
     }
 
     /// Wertet die Ausgabe von winget aus.
-    pub fn interpret(&self, out: &CommandOutput) -> Result<Response, String> {
+    pub fn interpret(&self, out: &CommandOutput) -> Result<Response, Failure> {
         let lines = &out.lines;
         match self {
             Request::Version => match parse::version(lines) {
                 Some(version) if out.success() => Ok(Response::Version(version)),
-                _ => Err(error_text(out)),
+                _ => Err(Failure::from_output(out)),
             },
             Request::ListInstalled => {
                 let packages = parse::installed(lines);
@@ -276,7 +282,7 @@ impl Request {
             }
             Request::Show { .. } => match parse::details(lines) {
                 Some(details) => Ok(Response::Details(details)),
-                None => Err(error_text(out)),
+                None => Err(Failure::from_output(out)),
             },
             Request::PinList => {
                 let pins = parse::pins(lines);
@@ -291,7 +297,7 @@ impl Request {
                 Some(REBOOT_REQUIRED_TO_FINISH | REBOOT_INITIATED) => Ok(Response::Done(Some(
                     "Ein Neustart ist nötig, um den Vorgang abzuschließen.".into(),
                 ))),
-                _ => Err(error_text(out)),
+                _ => Err(Failure::from_output(out)),
             },
         }
     }
@@ -299,11 +305,11 @@ impl Request {
 
 /// Abfragen gelten als erfolgreich, wenn winget „nichts gefunden“ meldet oder
 /// trotz Fehler (z. B. eine Quelle nicht erreichbar) Ergebnisse geliefert hat.
-fn query_result(out: &CommandOutput, empty: bool) -> Result<(), String> {
+fn query_result(out: &CommandOutput, empty: bool) -> Result<(), Failure> {
     if out.success() || !empty || out.code() == Some(NO_APPLICATIONS_FOUND) {
         Ok(())
     } else {
-        Err(error_text(out))
+        Err(Failure::from_output(out))
     }
 }
 
@@ -335,31 +341,114 @@ fn push_mode(args: &mut Vec<String>, mode: InstallMode) {
     }
 }
 
-/// Fehlermeldung aus den letzten Ausgabezeilen plus Fehlercode.
-pub fn error_text(out: &CommandOutput) -> String {
-    let mut tail: Vec<&str> = out
-        .lines
-        .iter()
-        .map(|line| line.trim())
-        .filter(|line| !line.is_empty() && !line.chars().all(|c| c == '-'))
-        .rev()
-        .take(3)
-        .collect();
-    tail.reverse();
-    let mut message = tail.join("\n");
+/// Ein fehlgeschlagener Auftrag.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Failure {
+    /// Kurzfassung in einer Zeile.
+    pub summary: String,
+    /// Die letzten aussagekräftigen Ausgabezeilen von winget.
+    pub details: String,
+    pub code: Option<u32>,
+    pub cancelled: bool,
+    /// Mit Administratorrechten würde der Vorgang vermutlich klappen bzw.
+    /// ohne Windows-Bestätigung durchlaufen.
+    pub needs_admin: bool,
+}
 
-    if let Some(code) = out.code() {
-        if !message.is_empty() {
-            message.push('\n');
+/// Fehlercodes, bei denen ein Start mit Adminrechten helfen dürfte.
+const ADMIN_CODES: [u32; 4] = [
+    COMMAND_REQUIRES_ADMIN,
+    ERROR_ELEVATION_REQUIRED,
+    MSIX_REQUIRES_ADMIN,
+    // Meist eine abgelehnte oder unbeantwortete Windows-Bestätigung.
+    INSTALL_CANCELLED_BY_USER,
+];
+
+impl Failure {
+    pub fn new(summary: impl Into<String>) -> Self {
+        Self {
+            summary: summary.into(),
+            details: String::new(),
+            code: None,
+            cancelled: false,
+            needs_admin: false,
         }
-        message.push_str(&format!("winget-Code 0x{code:08X}"));
-        if let Some(hint) = describe_code(code) {
-            message.push_str(&format!(" – {hint}"));
-        }
-    } else if message.is_empty() {
-        message = "winget wurde unerwartet beendet.".into();
     }
-    message
+
+    pub fn cancelled() -> Self {
+        Self {
+            cancelled: true,
+            ..Self::new("Abgebrochen")
+        }
+    }
+
+    pub fn from_output(out: &CommandOutput) -> Self {
+        let lines: Vec<&str> = out
+            .lines
+            .iter()
+            .map(|line| line.trim())
+            .filter(|line| !line.is_empty() && !line.chars().all(|c| c == '-'))
+            // Fortschrittsbalken („████▒▒  12 MB / 30 MB“) sagen über Fehler nichts.
+            .filter(|line| !line.contains(['█', '▒']))
+            .collect();
+        let code = out.code();
+        let summary = code
+            .and_then(describe_code)
+            .map(capitalize)
+            .or_else(|| {
+                lines
+                    .iter()
+                    .rev()
+                    .find(|line| !is_noise(line))
+                    .map(|line| line.to_string())
+            })
+            .unwrap_or_else(|| "winget wurde unerwartet beendet.".into());
+
+        let mut details = lines[lines.len().saturating_sub(6)..].join("\n");
+        if let Some(code) = code {
+            if !details.is_empty() {
+                details.push('\n');
+            }
+            details.push_str(&format!("winget-Code 0x{code:08X}"));
+        }
+
+        // „Administrator(rechte)“, „administrateur“, „administrador“, „elevation“ …
+        let mentions_admin = out.lines.iter().any(|line| {
+            let line = line.to_lowercase();
+            line.contains("administra") || line.contains("elevat")
+        });
+        let needs_admin = mentions_admin || code.is_some_and(|c| ADMIN_CODES.contains(&c));
+        Self {
+            summary,
+            details,
+            code,
+            cancelled: false,
+            needs_admin,
+        }
+    }
+
+    /// Kurzfassung und Details, z. B. für Tooltips.
+    pub fn full_text(&self) -> String {
+        if self.details.is_empty() {
+            self.summary.clone()
+        } else {
+            format!("{}\n\n{}", self.summary, self.details)
+        }
+    }
+}
+
+/// Zeilen, die als Kurzfassung nichts taugen: Pfade und Überleitungen wie
+/// „Das Installationsprotokoll ist verfügbar unter:“.
+fn is_noise(line: &str) -> bool {
+    line.ends_with(':') || line.contains(":\\") || line.starts_with("\\\\")
+}
+
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    chars
+        .next()
+        .map(|first| first.to_uppercase().chain(chars).collect())
+        .unwrap_or_default()
 }
 
 /// Deutsche Kurzbeschreibung bekannter winget-Fehlercodes.
@@ -369,6 +458,7 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
         0x8A15_0011 => "Prüfsumme des Installers stimmt nicht",
         NO_APPLICATIONS_FOUND => "kein passendes Paket gefunden",
         0x8A15_0016 => "mehrere Pakete passen, Auswahl nicht eindeutig",
+        COMMAND_REQUIRES_ADMIN => "dieser Befehl braucht Administratorrechte",
         UPDATE_NOT_APPLICABLE => "kein anwendbares Update gefunden",
         0x8A15_0101 => "die Anwendung läuft gerade – bitte schließen",
         0x8A15_0102 => "eine andere Installation läuft bereits",
@@ -378,10 +468,13 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
         0x8A15_0106 => "nicht genügend Arbeitsspeicher",
         0x8A15_0107 => "keine Internetverbindung",
         0x8A15_010A => "Neustart vor der Installation nötig",
-        0x8A15_010C => "vom Benutzer abgebrochen",
+        INSTALL_CANCELLED_BY_USER => {
+            "abgebrochen – Installer-Dialog oder Windows-Bestätigung wurde abgelehnt"
+        }
         0x8A15_010D => "eine andere Version ist bereits installiert",
         0x8A15_010E => "eine neuere Version ist bereits installiert",
         0x8A15_010F => "durch Richtlinien blockiert",
+        ERROR_ELEVATION_REQUIRED | MSIX_REQUIRES_ADMIN => "Administratorrechte erforderlich",
         _ => return None,
     })
 }
@@ -415,6 +508,7 @@ mod tests {
                 "--exact",
                 "--source",
                 "winget",
+                "--silent",
                 "--accept-package-agreements",
                 "--accept-source-agreements",
                 "--disable-interactivity"
@@ -460,22 +554,56 @@ mod tests {
     }
 
     #[test]
-    fn failed_action_reports_last_lines_and_code() {
+    fn failed_action_has_summary_details_and_code() {
         let out = CommandOutput {
             lines: vec![
                 "Paketinstallation wird gestartet...".into(),
-                "Installer failed with exit code: 1603".into(),
+                "Installation fehlgeschlagen mit Exitcode: 1603".into(),
+                "Das Installationsprotokoll ist verfügbar unter:".into(),
+                r"C:\Users\x\AppData\Local\Temp\install.log".into(),
                 "".into(),
             ],
             exit_code: Some(0x8A15_0101_u32 as i32),
         };
-        let error = Request::Upgrade {
+        let failure = Request::Upgrade {
             package: package("A.B", "winget"),
         }
         .interpret(&out)
         .unwrap_err();
-        assert!(error.contains("1603"));
-        assert!(error.contains("0x8A150101"));
-        assert!(error.contains("läuft gerade"));
+        assert_eq!(
+            failure.summary,
+            "Die Anwendung läuft gerade – bitte schließen"
+        );
+        assert!(failure.details.contains("1603"));
+        assert!(failure.details.ends_with("winget-Code 0x8A150101"));
+        assert!(!failure.needs_admin);
+    }
+
+    #[test]
+    fn unknown_code_uses_last_meaningful_line_and_detects_admin_hint() {
+        let out = CommandOutput {
+            lines: vec![
+                "Paketinstallation wird gestartet...".into(),
+                "Installation fehlgeschlagen mit Exitcode: 0x80073d28 : Die Paketinstallation ist \
+                 fehlgeschlagen, da Administratorrechte erforderlich sind."
+                    .into(),
+                "Das Installationsprotokoll ist verfügbar unter:".into(),
+                r"C:\Temp\claude.log".into(),
+            ],
+            exit_code: Some(0x1234_5678),
+        };
+        let failure = Failure::from_output(&out);
+        assert!(
+            failure
+                .summary
+                .starts_with("Installation fehlgeschlagen mit Exitcode: 0x80073d28")
+        );
+        assert!(failure.needs_admin);
+
+        let declined = CommandOutput {
+            lines: vec!["Installation abgebrochen".into()],
+            exit_code: Some(INSTALL_CANCELLED_BY_USER as i32),
+        };
+        assert!(Failure::from_output(&declined).needs_admin);
     }
 }
