@@ -102,3 +102,34 @@ pub fn section(ui: &mut Ui, title: &str, add_contents: impl FnOnce(&mut Ui)) {
             add_contents(ui);
         });
 }
+
+/// Fortschrittsbalken: mit Anteil gefüllt, ohne Anteil ein wandernder Block
+/// („läuft, Dauer unbekannt“).
+pub fn progress_bar(ui: &mut Ui, fraction: Option<f32>, width: f32) {
+    let height = 8.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    let radius = height / 2.0;
+    let color = ui.visuals().selection.bg_fill;
+    painter.rect_filled(rect, radius, ui.visuals().extreme_bg_color);
+    let filled = match fraction {
+        Some(fraction) => egui::Rect::from_min_size(
+            rect.min,
+            egui::vec2(rect.width() * fraction.clamp(0.0, 1.0), height),
+        ),
+        None => {
+            let segment = rect.width() * 0.3;
+            let phase = (ui.input(|i| i.time) * 0.7).fract() as f32;
+            let left = rect.left() - segment + phase * (rect.width() + segment);
+            ui.ctx().request_repaint();
+            egui::Rect::from_x_y_ranges(left..=left + segment, rect.y_range())
+        }
+    };
+    painter.rect_filled(filled.intersect(rect), radius, color);
+}
+
+/// Dauer als „m:ss“.
+pub fn elapsed(since: Instant) -> String {
+    let seconds = since.elapsed().as_secs();
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}

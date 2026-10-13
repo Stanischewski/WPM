@@ -281,15 +281,10 @@ impl DemoRunner {
             .collect();
         let first = args.first().map(String::as_str).unwrap_or_default();
 
-        // Ladeanimation wie bei winget.
-        if first != "--version" {
-            for spinner in ["\r   - ", "\r   \\ ", "\r   | ", "\r   / "] {
-                emit(spinner);
-                if !self.sleep(120) {
-                    return None;
-                }
-            }
-            emit("\r      \r");
+        // Wie das echte winget ohne Konsole: kein Spinner, kein Fortschrittsbalken,
+        // nur etwas Wartezeit.
+        if first != "--version" && !self.sleep(450) {
+            return None;
         }
 
         let mut state = self.state.lock().unwrap();
@@ -441,19 +436,11 @@ impl DemoRunner {
                     "Downloading https://example.org/download/{}.exe\n",
                     entry.id
                 ));
-                for step in 1..=20 {
-                    let bar = "█".repeat(step * 30 / 20) + &"▒".repeat(30 - step * 30 / 20);
-                    emit(&format!(
-                        "\r\x1b]9;4;1;{}\x1b\\  {bar}  {:.1} MB / 12.0 MB",
-                        step * 5,
-                        step as f32 * 0.6
-                    ));
-                    if !self.sleep(90) {
-                        return None;
-                    }
+                if !self.sleep(1800) {
+                    return None;
                 }
-                emit("\nSuccessfully verified installer hash\nStarting package install...\n");
-                if !self.sleep(900) {
+                emit("Successfully verified installer hash\nStarting package install...\n");
+                if !self.sleep(1500) {
                     return None;
                 }
                 // Systemweite Installer brauchen eine Windows-Bestätigung; ohne

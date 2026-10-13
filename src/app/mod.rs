@@ -20,6 +20,7 @@ use crate::scheduler;
 use crate::settings::Settings;
 use crate::system;
 use crate::winget::demo::DemoRunner;
+use crate::winget::parse;
 use crate::winget::{
     Details, Failure, Options, Package, Pin, Request, Response, Source, UpgradeList,
 };
@@ -123,7 +124,12 @@ pub struct WpmApp {
     shared_settings: Arc<RwLock<Settings>>,
     worker: Worker,
     queue: Vec<QueuedJob>,
+    /// Letzter `\r`-Zwischenstand von winget (nur im Demo-Modus bzw. wenn winget
+    /// einmal Fortschritt in eine Pipe schreibt).
     progress: String,
+    /// Letzte Statuszeile des laufenden Auftrags, z. B. „Wird heruntergeladen …“.
+    last_line: String,
+    job_started: Option<Instant>,
 
     installed: Option<Vec<Package>>,
     installed_filter: String,
@@ -199,6 +205,8 @@ impl WpmApp {
             worker,
             queue: Vec::new(),
             progress: String::new(),
+            last_line: String::new(),
+            job_started: None,
             installed: None,
             installed_filter: String::new(),
             updates: None,
@@ -466,6 +474,8 @@ impl WpmApp {
                 }
                 WorkerEvent::Started { id } => {
                     self.progress.clear();
+                    self.last_line.clear();
+                    self.job_started = Some(Instant::now());
                     if let Some(job) = self.queue.iter_mut().find(|job| job.id == id) {
                         job.running = true;
                         if let Some(package_id) = job.request.package_id() {
@@ -476,6 +486,22 @@ impl WpmApp {
                 }
                 WorkerEvent::Progress(text) => self.progress = text,
                 WorkerEvent::Log(line) => {
+                    // Bei Installationen o. Ä. zeigt die Statusleiste die letzte
+                    // Meldung von winget; Abfragen liefern nur Tabellenzeilen.
+                    let installing = self
+                        .queue
+                        .iter()
+                        .any(|job| job.running && job.request.changes_packages());
+                    let text = line.trim();
+                    if installing
+                        && !text.is_empty()
+                        && !text.starts_with("> ")
+                        && !text.contains(['█', '▒'])
+                    {
+                        self.last_line = text.to_string();
+                        // Nach dem Download geht es mit der nächsten Phase weiter.
+                        self.progress.clear();
+                    }
                     if self.log.len() >= MAX_LOG_LINES {
                         self.log.pop_front();
                     }
@@ -488,6 +514,8 @@ impl WpmApp {
                 } => {
                     self.queue.retain(|job| job.id != id);
                     self.progress.clear();
+                    self.last_line.clear();
+                    self.job_started = None;
                     self.handle_result(ctx, request, result);
                 }
             }
@@ -889,10 +917,19 @@ impl WpmApp {
                     {
                         self.worker.cancel_all();
                     }
-                    ui.add(
-                        egui::Label::new(RichText::new(&self.progress).monospace().weak())
-                            .truncate(),
-                    );
+                    if let Some(started) = self.job_started {
+                        ui.label(RichText::new(widgets::elapsed(started)).monospace().weak());
+                    }
+                    // winget meldet ohne Konsole keinen Fortschritt; dann läuft der
+                    // Balken unbestimmt und daneben steht die letzte Statuszeile.
+                    let fraction = parse::progress_fraction(&self.progress);
+                    widgets::progress_bar(ui, fraction, 140.0);
+                    let detail = if fraction.is_some() {
+                        self.progress.replace(['█', '▒'], "").trim().to_string()
+                    } else {
+                        self.last_line.clone()
+                    };
+                    ui.add(egui::Label::new(RichText::new(detail).weak()).truncate());
                 });
             } else {
                 ui.label("Bereit");

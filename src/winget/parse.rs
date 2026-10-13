@@ -310,6 +310,36 @@ fn split_field(line: &str) -> Option<(String, String)> {
         .map(|key| (key.trim().to_string(), String::new()))
 }
 
+/// Anteil (0–1) aus einem Fortschrittstext von winget, z. B.
+/// „██████▒▒▒▒  4.8 MB / 12.0 MB“ oder „45%“. `None`, wenn keine Zahlen
+/// erkennbar sind.
+pub fn progress_fraction(text: &str) -> Option<f32> {
+    let number = |token: &str| token.replace(',', ".").parse::<f64>().ok();
+    if let Some(percent) = text
+        .split_whitespace()
+        .find_map(|token| token.strip_suffix('%').and_then(number))
+    {
+        return Some((percent / 100.0).clamp(0.0, 1.0) as f32);
+    }
+    let (done, total) = text.split_once(" / ")?;
+    let amount = |words: &[&str]| -> Option<f64> {
+        let [value, unit] = words else { return None };
+        let factor = match unit.to_ascii_uppercase().as_str() {
+            "B" => 1.0,
+            "KB" | "KIB" => 1024.0,
+            "MB" | "MIB" => 1024.0 * 1024.0,
+            "GB" | "GIB" => 1024.0 * 1024.0 * 1024.0,
+            _ => return None,
+        };
+        Some(number(value)? * factor)
+    };
+    let done_words: Vec<&str> = done.split_whitespace().collect();
+    let total_words: Vec<&str> = total.split_whitespace().take(2).collect();
+    let done = amount(done_words.get(done_words.len().checked_sub(2)?..)?)?;
+    let total = amount(&total_words)?;
+    (total > 0.0).then(|| (done / total).clamp(0.0, 1.0) as f32)
+}
+
 /// Erzeugt eine Tabelle im Stil von winget (für den Demo-Modus und Tests).
 /// Ist die Tabelle breiter als `max_width`, wird die erste Spalte mit „…“
 /// gekürzt – wie winget es tut, wenn die Ausgabe nicht in eine Konsole geht.
@@ -565,6 +595,22 @@ Installationsprogramm:
             ("Markierungen".into(), "developer-tools\neditor".into())
         );
         assert_eq!(details.fields[5].1, "Installertyp: inno");
+    }
+
+    #[test]
+    fn parses_progress_fractions() {
+        let close = |a: Option<f32>, b: f32| a.is_some_and(|a| (a - b).abs() < 0.001);
+        assert!(close(
+            progress_fraction("  ██████▒▒▒▒  4.8 MB / 12.0 MB"),
+            0.4
+        ));
+        assert!(close(progress_fraction("512 KB / 1,00 MB"), 0.5));
+        assert!(close(progress_fraction("Installation 45%"), 0.45));
+        assert_eq!(
+            progress_fraction("Paketinstallation wird gestartet..."),
+            None
+        );
+        assert_eq!(progress_fraction("a / b"), None);
     }
 
     #[test]
