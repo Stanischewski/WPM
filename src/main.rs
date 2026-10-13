@@ -93,7 +93,10 @@ fn main() -> eframe::Result {
             .with_app_id("wpm")
             .with_inner_size([1100.0, 700.0])
             .with_min_inner_size([760.0, 420.0])
-            .with_icon(icon::app_icon()),
+            .with_icon(icon::app_icon())
+            // eframe zeigt das Fenster nach dem ersten Bild kurz an, bevor WPM es
+            // versteckt bzw. minimiert – dabei soll es keinen Fokus stehlen.
+            .with_active(!flags.minimized),
         ..Default::default()
     };
     eframe::run_native(

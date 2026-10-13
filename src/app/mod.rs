@@ -198,6 +198,8 @@ pub struct WpmApp {
     /// Ergebnisse von Installationen o. Ä. bei verstecktem Fenster, für eine
     /// Benachrichtigung, sobald alles erledigt ist.
     background_results: Vec<(String, bool)>,
+    /// Ergebnis der nächsten Update-Suche melden (aus dem Infobereich gestartet).
+    announce_check: bool,
 }
 
 impl WpmApp {
@@ -283,6 +285,7 @@ impl WpmApp {
             quitting: false,
             leave_elevated: false,
             background_results: Vec::new(),
+            announce_check: false,
         };
         app.sync_tray();
 
@@ -407,6 +410,12 @@ impl WpmApp {
             return;
         }
         if !self.can_restart_elevated() {
+            return;
+        }
+        if self.hidden {
+            // Die Windows-Bestätigung braucht ein sichtbares Fenster, sonst
+            // blinkt sie nur in der Taskleiste und blockiert WPM.
+            self.show_window(ctx);
             return;
         }
         let packages = std::mem::take(&mut self.elevate_upgrades);
@@ -583,7 +592,7 @@ impl WpmApp {
 
         // Nach Installationen o. Ä. die Listen einmal neu laden, sobald die
         // Warteschlange leer ist.
-        if self.needs_refresh && self.queue.is_empty() {
+        if self.needs_refresh && self.queue.is_empty() && !self.leave_elevated {
             self.needs_refresh = false;
             self.submit(self.check_request());
             if self.installed.is_some() {
@@ -626,6 +635,16 @@ impl WpmApp {
             Ok(Response::Done(Some(note))) => format!(" {note}"),
             _ => String::new(),
         };
+        // Aus dem Infobereich gestartete Suche bei verstecktem Fenster.
+        let announce = matches!(request, Request::CheckUpdates { .. })
+            && std::mem::take(&mut self.announce_check)
+            && self.hidden;
+        if announce
+            && let Err(failure) = &result
+            && !failure.cancelled
+        {
+            system::notify("Update-Suche fehlgeschlagen", &failure.summary);
+        }
 
         match (request, result) {
             (Request::Show { id, .. }, result) => {
@@ -648,6 +667,9 @@ impl WpmApp {
                 self.installed = Some(packages);
             }
             (Request::CheckUpdates { .. }, Ok(Response::Updates(list))) => {
+                if announce {
+                    announce_updates(&list);
+                }
                 self.report_pending_upgrades(&list);
                 self.resume_after_restart(&list);
                 self.selected
@@ -862,15 +884,12 @@ impl WpmApp {
     fn handle_commands(&mut self, ctx: &egui::Context) {
         while let Ok(command) = self.commands.try_recv() {
             match command {
-                Command::Show => self.show_window(ctx),
+                Command::Show if !self.quitting => self.show_window(ctx),
+                Command::Show => {}
                 Command::CheckUpdates => {
-                    if !self.busy(|r| matches!(r, Request::CheckUpdates { .. })) {
-                        // Bei verstecktem Fenster neue Updates als Benachrichtigung melden.
-                        let notify = self.hidden && self.settings.notify;
-                        self.worker
-                            .sender
-                            .submit(self.check_request(), self.options(), notify);
-                    }
+                    // Bei verstecktem Fenster kommt das Ergebnis als Benachrichtigung.
+                    self.announce_check = self.hidden;
+                    self.submit(self.check_request());
                 }
                 Command::Quit => self.quit(ctx),
             }
@@ -882,7 +901,9 @@ impl WpmApp {
         if self.quitting || !ctx.input(|i| i.viewport().close_requested()) {
             return;
         }
-        if !self.keeps_running_in_background() {
+        // Ein verstecktes Fenster kann nur ein anderes Programm schließen (z. B.
+        // `taskkill` oder ein Updater) – dann wirklich beenden.
+        if !self.keeps_running_in_background() || self.hidden {
             self.quitting = true;
             self.tray = None;
             return;
@@ -1358,6 +1379,17 @@ fn background_result_text(
         _ => return None,
     };
     Some((text, ok))
+}
+
+/// Benachrichtigung mit dem Ergebnis einer Update-Suche – auch wenn es
+/// nichts Neues gibt (Suche wurde ausdrücklich gestartet).
+fn announce_updates(list: &UpgradeList) {
+    let names: Vec<&str> = list.upgrades.iter().map(|p| p.name.as_str()).collect();
+    match names.len() {
+        0 => system::notify("Keine Updates verfügbar", "Alle Pakete sind aktuell."),
+        1 => system::notify("1 Update verfügbar", &summarize(&names)),
+        n => system::notify(&format!("{n} Updates verfügbar"), &summarize(&names)),
+    }
 }
 
 /// Höchstens vier Einträge, danach „…“.

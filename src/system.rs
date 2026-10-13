@@ -42,9 +42,10 @@ mod imp {
         LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
     };
     use windows_sys::Win32::System::Threading::{
-        CreateEventW, CreateMutexW, CreateProcessWithTokenW, EVENT_MODIFY_STATE, GetCurrentProcess,
-        INFINITE, OpenEventW, OpenProcess, OpenProcessToken, PROCESS_INFORMATION,
-        PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW, SetEvent, WaitForSingleObject,
+        CreateEventExW, CreateMutexW, CreateProcessWithTokenW, EVENT_MODIFY_STATE,
+        GetCurrentProcess, INFINITE, OpenEventW, OpenProcess, OpenProcessToken,
+        PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        SYNCHRONIZATION_SYNCHRONIZE, SetEvent, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::{
         FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT,
@@ -307,15 +308,18 @@ mod imp {
                 lpSecurityDescriptor: descriptor,
                 bInheritHandle: 0,
             };
-            let event = CreateEventW(
+            // Nur SYNCHRONIZE anfordern: Existiert das Ereignis noch (z. B. kurz
+            // nach dem Wechsel von der Instanz mit Adminrechten), reicht das zum
+            // Öffnen. Flags 0: automatisch zurückgesetzt, anfangs nicht gesetzt.
+            let event = CreateEventExW(
                 if have_descriptor {
                     &attributes
                 } else {
                     ptr::null()
                 },
-                0,
-                0,
                 name.as_ptr(),
+                0,
+                SYNCHRONIZATION_SYNCHRONIZE,
             );
             if have_descriptor {
                 LocalFree(descriptor);
