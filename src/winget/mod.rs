@@ -354,13 +354,21 @@ fn push_mode(args: &mut Vec<String>, mode: InstallMode) {
 pub struct Failure {
     /// Kurzfassung in einer Zeile.
     pub summary: String,
+    /// Erklärung und was man tun kann (falls bekannt).
+    pub advice: Option<&'static str>,
     /// Die letzten aussagekräftigen Ausgabezeilen von winget.
     pub details: String,
     pub code: Option<u32>,
+    /// Exitcode des Installers selbst (z. B. 1603 bei MSI), sofern genannt.
+    pub installer_code: Option<i32>,
+    /// Protokolldatei des Installers, die winget nennt.
+    pub log_path: Option<PathBuf>,
     pub cancelled: bool,
     /// Mit Administratorrechten würde der Vorgang vermutlich klappen bzw.
     /// ohne Windows-Bestätigung durchlaufen.
     pub needs_admin: bool,
+    /// Die neue Version passt nicht zu dieser Installation – Anheften anbieten.
+    pub suggest_pin: bool,
 }
 
 /// Fehlercodes, bei denen ein Start mit Adminrechten helfen dürfte.
@@ -377,10 +385,14 @@ impl Failure {
     pub fn new(summary: impl Into<String>) -> Self {
         Self {
             summary: summary.into(),
+            advice: None,
             details: String::new(),
             code: None,
+            installer_code: None,
+            log_path: None,
             cancelled: false,
             needs_admin: false,
+            suggest_pin: false,
         }
     }
 
@@ -401,17 +413,29 @@ impl Failure {
             .filter(|line| !line.contains(['█', '▒']))
             .collect();
         let code = out.code();
+        let installer_code = installer_exit_code(&lines);
+        let installer_info = installer_code.and_then(describe_installer_code);
         let summary = code
             .and_then(describe_code)
             .map(capitalize)
             .or_else(|| {
-                lines
-                    .iter()
-                    .rev()
-                    .find(|line| !is_noise(line))
-                    .map(|line| line.to_string())
+                let line = lines.iter().rev().find(|line| !is_noise(line))?;
+                Some(match installer_info {
+                    Some((short, _)) => format!("{line} ({short})"),
+                    None => line.to_string(),
+                })
             })
             .unwrap_or_else(|| "winget wurde unerwartet beendet.".into());
+        let advice = match code {
+            Some(UPDATE_NOT_APPLICABLE) => Some(
+                "winget kennt eine neuere Version, deren Installer aber nicht zu dieser \
+                 Installation passt (andere Installationsart, anderer Bereich oder andere \
+                 Architektur) – oder das Programm ist inzwischen schon aktuell. Abhilfe: Paket \
+                 deinstallieren und über „Suchen“ neu installieren, oder anheften, wenn es sich \
+                 selbst aktualisiert.",
+            ),
+            _ => installer_info.map(|(_, advice)| advice),
+        };
 
         let mut details = lines[lines.len().saturating_sub(6)..].join("\n");
         if let Some(code) = code {
@@ -431,24 +455,34 @@ impl Failure {
             code,
             Some(INSTALLER_PROHIBITS_ELEVATION | ADMIN_CONTEXT_ACTION_PROHIBITED)
         );
-        let needs_admin =
-            !needs_unelevated && (mentions_admin || code.is_some_and(|c| ADMIN_CODES.contains(&c)));
+        let installer_needs_admin = matches!(installer_code, Some(740 | 1223 | 1602));
+        let needs_admin = !needs_unelevated
+            && (mentions_admin
+                || installer_needs_admin
+                || code.is_some_and(|c| ADMIN_CODES.contains(&c)));
         Self {
             summary,
+            advice,
             details,
             code,
+            installer_code,
+            log_path: installer_log(&lines),
             cancelled: false,
             needs_admin,
+            suggest_pin: code == Some(UPDATE_NOT_APPLICABLE),
         }
     }
 
-    /// Kurzfassung und Details, z. B. für Tooltips.
+    /// Kurzfassung, Erklärung und Details, z. B. für Tooltips.
     pub fn full_text(&self) -> String {
-        if self.details.is_empty() {
-            self.summary.clone()
-        } else {
-            format!("{}\n\n{}", self.summary, self.details)
+        let mut text = self.summary.clone();
+        for part in [self.advice, Some(self.details.as_str())] {
+            if let Some(part) = part.filter(|p| !p.is_empty()) {
+                text.push_str("\n\n");
+                text.push_str(part);
+            }
         }
+        text
     }
 }
 
@@ -456,6 +490,77 @@ impl Failure {
 /// „Das Installationsprotokoll ist verfügbar unter:“.
 fn is_noise(line: &str) -> bool {
     line.ends_with(':') || line.contains(":\\") || line.starts_with("\\\\")
+}
+
+/// Exitcode des Installers aus Zeilen wie „Installation fehlgeschlagen mit
+/// Exitcode: 1603“ bzw. „Installer failed with exit code: 1603“.
+fn installer_exit_code(lines: &[&str]) -> Option<i32> {
+    lines.iter().rev().find_map(|line| {
+        let lower = line.to_lowercase();
+        if !lower.contains("exit") && !lower.contains("code") {
+            return None;
+        }
+        line.rsplit_once(':')?.1.trim().parse().ok()
+    })
+}
+
+/// Protokolldatei des Installers aus „… verfügbar unter: C:\…\x.log“ bzw.
+/// einer eigenen Zeile mit dem Pfad.
+fn installer_log(lines: &[&str]) -> Option<PathBuf> {
+    lines.iter().rev().find_map(|line| {
+        let path = line
+            .rsplit_once(": ")
+            .map_or(*line, |(_, path)| path)
+            .trim();
+        (path.to_lowercase().ends_with(".log") && path.contains(":\\")).then(|| PathBuf::from(path))
+    })
+}
+
+/// Kurzbeschreibung und Rat zu häufigen Exitcodes von Installern (vor allem
+/// Windows Installer/MSI, die viele andere Installer übernehmen).
+pub fn describe_installer_code(code: i32) -> Option<(&'static str, &'static str)> {
+    Some(match code {
+        1603 => (
+            "allgemeiner Installationsfehler",
+            "Häufig läuft das Programm noch – auch im Infobereich neben der Uhr. Programm \
+             vollständig beenden und erneut versuchen. Die genaue Ursache steht im \
+             Installationsprotokoll: nach „Return value 3“ bzw. „Rückgabewert 3“ suchen, die \
+             Zeilen davor nennen den fehlgeschlagenen Schritt.",
+        ),
+        1618 => (
+            "eine andere Installation läuft",
+            "Windows Installer ist gerade mit einer anderen Installation beschäftigt (z. B. \
+             Windows Update). Etwas warten und erneut versuchen.",
+        ),
+        1638 => (
+            "andere Version bereits installiert",
+            "Es ist bereits eine andere Version installiert, die der Installer nicht ersetzen \
+             kann. Programm erst deinstallieren, dann neu installieren.",
+        ),
+        1625 => (
+            "durch Richtlinie blockiert",
+            "Eine Gruppenrichtlinie verbietet diese Installation. Ggf. den Administrator fragen.",
+        ),
+        1633 => (
+            "für dieses System nicht geeignet",
+            "Der Installer passt nicht zu dieser Windows-Version oder Architektur.",
+        ),
+        1619 | 1620 => (
+            "Installationspaket nicht lesbar",
+            "Der heruntergeladene Installer ist beschädigt oder unvollständig. Erneut versuchen.",
+        ),
+        740 => (
+            "Administratorrechte erforderlich",
+            "Der Installer braucht Administratorrechte. „Updates mit Administratorrechten \
+             installieren“ in den Einstellungen einschalten oder WPM als Administrator starten.",
+        ),
+        1602 | 1223 => (
+            "abgebrochen",
+            "Der Installer-Dialog oder die Windows-Bestätigung wurde abgelehnt. Mit \
+             Administratorrechten entfällt die Bestätigung.",
+        ),
+        _ => return None,
+    })
 }
 
 fn capitalize(text: &str) -> String {
@@ -474,7 +579,7 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
         NO_APPLICATIONS_FOUND => "kein passendes Paket gefunden",
         0x8A15_0016 => "mehrere Pakete passen, Auswahl nicht eindeutig",
         COMMAND_REQUIRES_ADMIN => "dieser Befehl braucht Administratorrechte",
-        UPDATE_NOT_APPLICABLE => "kein anwendbares Update gefunden",
+        UPDATE_NOT_APPLICABLE => "kein passendes Update für diese Installation",
         0x8A15_0101 => "die Anwendung läuft gerade – bitte schließen",
         0x8A15_0102 => "eine andere Installation läuft bereits",
         0x8A15_0103 => "Dateien werden gerade verwendet",
@@ -602,6 +707,60 @@ mod tests {
         assert!(failure.details.contains("1603"));
         assert!(failure.details.ends_with("winget-Code 0x8A150101"));
         assert!(!failure.needs_admin);
+    }
+
+    #[test]
+    fn installer_exit_code_log_and_advice_are_extracted() {
+        let out = CommandOutput {
+            lines: vec![
+                "Paketinstallation wird gestartet...".into(),
+                "Installation fehlgeschlagen mit Exitcode: 1603".into(),
+                "Das Installationsprotokoll ist verfügbar unter:".into(),
+                r"C:\Users\x\AppData\Local\Temp\EpicGames.log".into(),
+            ],
+            exit_code: Some(0x8A15_0049_u32 as i32),
+        };
+        let failure = Failure::from_output(&out);
+        assert_eq!(failure.installer_code, Some(1603));
+        assert_eq!(
+            failure.summary,
+            "Installation fehlgeschlagen mit Exitcode: 1603 (allgemeiner Installationsfehler)"
+        );
+        assert!(failure.advice.unwrap().contains("Programm"));
+        assert_eq!(
+            failure.log_path.as_deref(),
+            Some(std::path::Path::new(
+                r"C:\Users\x\AppData\Local\Temp\EpicGames.log"
+            ))
+        );
+        assert!(!failure.needs_admin);
+
+        let english = CommandOutput {
+            lines: vec![
+                "Installer failed with exit code: 740".into(),
+                r"Installer log is available at: C:\Temp\setup.log".into(),
+            ],
+            exit_code: Some(0x8A15_0006_u32 as i32),
+        };
+        let failure = Failure::from_output(&english);
+        assert_eq!(failure.installer_code, Some(740));
+        assert!(failure.needs_admin);
+        assert_eq!(
+            failure.log_path.as_deref(),
+            Some(std::path::Path::new(r"C:\Temp\setup.log"))
+        );
+    }
+
+    #[test]
+    fn update_not_applicable_suggests_reinstall_or_pin() {
+        let out = CommandOutput {
+            lines: vec!["Es wurde kein anwendbares Upgrade gefunden.".into()],
+            exit_code: Some(UPDATE_NOT_APPLICABLE as i32),
+        };
+        let failure = Failure::from_output(&out);
+        assert!(failure.suggest_pin);
+        assert!(failure.advice.unwrap().contains("anheften"));
+        assert_eq!(failure.installer_code, None);
     }
 
     #[test]

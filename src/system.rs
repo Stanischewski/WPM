@@ -198,6 +198,26 @@ mod imp {
         }
     }
 
+    pub fn open_file(path: &Path) -> io::Result<()> {
+        let (verb, file) = (wide("open"), wide(path));
+        // SAFETY: Beide Zeichenketten sind nullterminiert.
+        let result = unsafe {
+            ShellExecuteW(
+                ptr::null_mut(),
+                verb.as_ptr(),
+                file.as_ptr(),
+                ptr::null(),
+                ptr::null(),
+                SW_SHOWNORMAL,
+            )
+        };
+        if result as usize > 32 {
+            Ok(())
+        } else {
+            Err(io::Error::last_os_error())
+        }
+    }
+
     pub fn message_box(title: &str, text: &str) {
         let (title, text) = (wide(title), wide(text));
         // SAFETY: Beide Zeichenketten sind nullterminiert.
@@ -318,6 +338,13 @@ mod imp {
         eprintln!("[{title}] {text}");
     }
 
+    pub fn open_file(path: &std::path::Path) -> io::Result<()> {
+        std::process::Command::new("xdg-open")
+            .arg(path)
+            .spawn()
+            .map(|_| ())
+    }
+
     pub fn notify(title: &str, body: &str) {
         eprintln!("[Benachrichtigung] {title}: {body}");
     }
@@ -385,6 +412,23 @@ pub fn native_window(handle: &impl raw_window_handle::HasWindowHandle) -> Option
 
 pub fn message_box(title: &str, text: &str) {
     imp::message_box(title, text);
+}
+
+/// Öffnet eine Protokolldatei (`.log`/`.txt`) mit dem zugehörigen Programm.
+/// Andere Dateitypen werden bewusst nicht geöffnet – der Pfad stammt aus der
+/// Ausgabe eines Installers.
+pub fn open_log_file(path: &std::path::Path) -> io::Result<()> {
+    let is_log = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("log") || e.eq_ignore_ascii_case("txt"));
+    if !is_log || !path.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "Protokolldatei nicht gefunden",
+        ));
+    }
+    imp::open_file(path)
 }
 
 pub fn notify(title: &str, body: &str) {

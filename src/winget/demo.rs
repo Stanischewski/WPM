@@ -416,6 +416,15 @@ impl DemoRunner {
                     ));
                 };
                 let index = find_index(&state.installed, args);
+                // Neuere Version vorhanden, aber deren Installer passt nicht zur Installation.
+                if command[0] == "upgrade" && entry.id == "Mozilla.Firefox.de" {
+                    return Some(Reply {
+                        text: "No applicable upgrade found.\nA newer package version is available in a \
+                               configured source, but it does not apply to your system or requirements.\n"
+                            .into(),
+                        code: super::UPDATE_NOT_APPLICABLE as i32,
+                    });
+                }
                 if command[0] == "upgrade" && index.is_none_or(|i| !state.installed[i].has_update())
                 {
                     return Some(Reply {
@@ -451,6 +460,15 @@ impl DemoRunner {
                                Installer log is available at: C:\\Users\\demo\\AppData\\Local\\Temp\\vcredist.log\n"
                             .into(),
                         code: super::INSTALL_CANCELLED_BY_USER as i32,
+                    });
+                }
+                // Läuft das Programm noch, bricht das MSI mit 1603 ab.
+                if entry.id == "Microsoft.PowerToys" {
+                    return Some(Reply {
+                        text: "Installer failed with exit code: 1603\n\
+                               Installer log is available at: C:\\Users\\demo\\AppData\\Local\\Temp\\PowerToys.log\n"
+                            .into(),
+                        code: 0x8A15_0049_u32 as i32,
                     });
                 }
                 state = self.state.lock().unwrap();

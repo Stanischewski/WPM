@@ -84,6 +84,12 @@ struct Notice {
     admin_hint: bool,
     /// Fehlgeschlagenes Update, das nach dem Neustart erneut versucht wird.
     retry: Option<Package>,
+    /// Erklärung, was man tun kann (immer sichtbar, unter dem Titel).
+    advice: String,
+    /// Protokolldatei des Installers.
+    log_path: Option<std::path::PathBuf>,
+    /// Paket, dessen Anheften angeboten wird.
+    pin: Option<Package>,
     created: Instant,
 }
 
@@ -96,6 +102,9 @@ impl Notice {
             expanded: false,
             admin_hint: false,
             retry: None,
+            advice: String::new(),
+            log_path: None,
+            pin: None,
             created: Instant::now(),
         }
     }
@@ -289,14 +298,17 @@ impl WpmApp {
     }
 
     fn notice_failure(&mut self, request: &Request, failure: &Failure) {
-        let retry = match request {
-            Request::Upgrade { package } if failure.needs_admin => Some(package.clone()),
+        let upgrade = match request {
+            Request::Upgrade { package } => Some(package.clone()),
             _ => None,
         };
         self.notices.push(Notice {
             details: failure.details.clone(),
             admin_hint: failure.needs_admin,
-            retry,
+            retry: upgrade.clone().filter(|_| failure.needs_admin),
+            advice: failure.advice.unwrap_or_default().to_string(),
+            log_path: failure.log_path.clone(),
+            pin: upgrade.filter(|_| failure.suggest_pin),
             ..Notice::new(
                 NoticeKind::Error,
                 format!("{} fehlgeschlagen: {}", request.label(), failure.summary),
@@ -819,6 +831,8 @@ impl WpmApp {
         let can_restart = self.can_restart_elevated();
         let mut dismissed = None;
         let mut restart: Option<Vec<String>> = None;
+        let mut pin: Option<Package> = None;
+        let mut open_log: Option<std::path::PathBuf> = None;
         for (index, notice) in self.notices.iter_mut().enumerate() {
             let (icon, color) = match notice.kind {
                 NoticeKind::Info => ("ℹ", ui.visuals().hyperlink_color),
@@ -839,6 +853,26 @@ impl WpmApp {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                             if ui.small_button("✖").on_hover_text("Schließen").clicked() {
                                 dismissed = Some(index);
+                            }
+                            if let Some(package) = &notice.pin
+                                && ui
+                                    .small_button("📌 Anheften")
+                                    .on_hover_text(
+                                        "Dieses Update künftig überspringen (winget pin). \
+                                         Lässt sich unter „Angeheftete Pakete“ wieder lösen.",
+                                    )
+                                    .clicked()
+                            {
+                                pin = Some(package.clone());
+                                dismissed = Some(index);
+                            }
+                            if let Some(path) = notice.log_path.as_ref().filter(|p| p.is_file())
+                                && ui
+                                    .small_button("📄 Protokoll öffnen")
+                                    .on_hover_text(path.display().to_string())
+                                    .clicked()
+                            {
+                                open_log = Some(path.clone());
                             }
                             if !notice.details.is_empty() {
                                 let label = if notice.expanded {
@@ -882,6 +916,9 @@ impl WpmApp {
                             );
                         });
                     });
+                    if !notice.advice.is_empty() {
+                        ui.add(egui::Label::new(RichText::new(&notice.advice).weak()).wrap());
+                    }
                     if notice.expanded {
                         ui.add(
                             egui::Label::new(RichText::new(&notice.details).monospace().size(11.5))
@@ -896,6 +933,17 @@ impl WpmApp {
         }
         if let Some(upgrade_ids) = restart {
             self.restart_elevated(ui.ctx(), &upgrade_ids);
+        }
+        if let Some(package) = pin {
+            self.apply(Action::Pin(package));
+        }
+        if let Some(path) = open_log
+            && let Err(e) = system::open_log_file(&path)
+        {
+            self.notice(
+                NoticeKind::Error,
+                format!("Protokoll konnte nicht geöffnet werden: {e}"),
+            );
         }
     }
 

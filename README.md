@@ -96,6 +96,14 @@ Grenzen:
   Adminrechten mitgeladen werden (der MSVC-Build aus der GitHub-Action ist
   dagegen gehärtet, siehe `.cargo/config.toml`).
 
+**Fehlermeldungen** zeigen eine Kurzfassung und, wo bekannt, eine Erklärung
+mit Abhilfe – z. B. bei Installer-Exitcode **1603** (allgemeiner Fehler, meist
+läuft das Programm noch), 1618, 1638 oder 740, oder bei **„kein passendes
+Update“** (`0x8A15002B`: die neue Version passt nicht zur Installationsart;
+neu installieren oder anheften). Nennt winget ein Installationsprotokoll, gibt
+es den Knopf „Protokoll öffnen“, bei nicht passenden Updates „Anheften“. Die
+vollständige Ausgabe von winget steht unter „Details“.
+
 **Update installiert, aber weiter in der Liste?** Bei MSIX-Paketen (z. B.
 Claude) meldet winget Erfolg, aktiviert die neue Version aber erst, wenn die
 Anwendung beendet ist. WPM erkennt das und weist darauf hin. Bleibt das Update
