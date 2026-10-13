@@ -4,6 +4,14 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: "Release v<Version aus Cargo.toml> veröffentlichen"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
   windows:
@@ -26,3 +34,45 @@ jobs:
         with:
           name: wpm-windows-x64
           path: target/release/wpm.exe
+
+  # Veröffentlicht die EXE als Release – beim Push eines Tags `v<Version>`
+  # oder per „Run workflow“ mit „Release veröffentlichen“. Der Download-Link
+  # im README (releases/latest/download/wpm.exe) zeigt dann darauf.
+  release:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version ermitteln
+        id: version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)
+          tag="v$version"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "::error::Tag $GITHUB_REF_NAME passt nicht zur Version $version in Cargo.toml"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: wpm-windows-x64
+          path: dist
+      - name: Prüfsumme
+        working-directory: dist
+        run: sha256sum wpm.exe > wpm.exe.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: WPM ${{ steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: |
+            dist/wpm.exe
+            dist/wpm.exe.sha256
+          generate_release_notes: true
+          body: |
+            **Download:** `wpm.exe` unten unter *Assets* herunterladen und doppelklicken – keine Installation nötig. Voraussetzung: Windows 10/11 mit winget (App-Installer).
+
+            Die EXE ist nicht digital signiert. Meldet Windows „Der Computer wurde durch Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.

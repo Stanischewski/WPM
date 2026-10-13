@@ -1,5 +1,17 @@
 # WPM – grafische Oberfläche für winget
 
+### [⬇ Hier downloaden (wpm.exe)](https://github.com/Stanischewski/WPM/releases/latest/download/wpm.exe)
+
+Der Link lädt immer die neueste Version. Einfach herunterladen und
+doppelklicken – eine Installation ist nicht nötig. Läuft unter Windows 10
+und 11. Ältere Versionen und Änderungen stehen unter
+[Releases](https://github.com/Stanischewski/WPM/releases).
+
+> **„Der Computer wurde durch Windows geschützt“?** Die EXE ist nicht digital
+> signiert, deshalb warnt Windows SmartScreen beim ersten Start. Auf
+> **„Weitere Informationen“** und dann **„Trotzdem ausführen“** klicken. Auch
+> der Browser fragt beim Herunterladen eventuell nach – dann „Behalten“ wählen.
+
 Eine einfache, schnelle Oberfläche für den Windows-Paketmanager
 [winget](https://learn.microsoft.com/windows/package-manager/winget/),
 geschrieben in Rust mit [egui](https://github.com/emilk/egui). Die Idee:
@@ -54,12 +66,30 @@ Beides lässt sich unter *Einstellungen → Allgemein* ein- und ausschalten
 Voraussetzung: Windows 10/11 mit installiertem **App-Installer** (enthält
 `winget`, ist auf aktuellen Systemen vorinstalliert).
 
+Am einfachsten über „Hier downloaden“ ganz oben. Wer
+„Mit Windows starten“ nutzen möchte, legt `wpm.exe` vorher an einen festen
+Ort, am besten nach `C:\Program Files\WPM` (siehe
+[Weniger Nachfragen beim Aktualisieren](#weniger-nachfragen-beim-aktualisieren)).
+
+Selbst bauen:
+
 ```powershell
 cargo run --release
 ```
 
-Fertige EXE-Dateien baut die GitHub-Action `Build` bei jedem Push – unter
+Zusätzlich baut die GitHub-Action `Build` bei jedem Push eine EXE – unter
 *Actions → Build → Artifacts → wpm-windows-x64*.
+
+### Neue Version veröffentlichen
+
+1. Version in `Cargo.toml` erhöhen und committen.
+2. Tag `v<Version>` pushen (z. B. `git tag v0.3.0 && git push origin v0.3.0`)
+   – oder unter *Actions → Build → Run workflow* „Release veröffentlichen“
+   ankreuzen.
+
+Die Action prüft, testet und baut die EXE und veröffentlicht sie als Release
+`v<Version>` (mit SHA-256-Prüfsumme). Der Download-Link oben zeigt danach
+automatisch auf die neue Version.
 
 ### Kommandozeilenoptionen
 
@@ -226,3 +256,8 @@ keine Nachfrage beim Anmelden).
   oder das PowerShell-Modul `Microsoft.WinGet.Client` nutzen
 - weitere Paketmanager wie Scoop oder Chocolatey
 - Programmsymbol in der EXE (Ressourcendatei)
+
+## Lizenz
+
+[MIT](LICENSE) – frei nutzbar, veränderbar und weitergebbar, auch kommerziell;
+ohne Gewähr.
