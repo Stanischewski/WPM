@@ -130,8 +130,24 @@ fn run_helper(pid: u32, target: &Path, hidden: bool) {
         args.extend(crate::background_args(false));
     }
     // Mit Adminrechten (systemweite Installation) das neue WPM normal starten.
-    if !system::is_elevated() || system::launch_unelevated_exe(target, &args).is_err() {
-        let _ = system::spawn_detached(target, &args);
+    let started = (system::is_elevated() && system::launch_unelevated_exe(target, &args).is_ok())
+        || system::spawn_detached(target, &args).is_ok();
+    if !started {
+        system::message_box(
+            "WPM",
+            &format!(
+                "WPM konnte nach dem Update nicht neu gestartet werden ({}). Bitte WPM \
+                 von Hand starten (z. B. mit Win+R → wpm).",
+                target.display()
+            ),
+        );
+    }
+    if system::is_elevated() {
+        // Das neue WPM läuft ohne Adminrechte und kann diese Kopie unter
+        // „Programme“ nicht löschen – Windows entfernt sie beim nächsten Start.
+        if let Ok(me) = std::env::current_exe() {
+            let _ = system::delete_on_reboot(&me);
+        }
     }
 }
 
@@ -141,6 +157,11 @@ pub fn remove_leftover_helper() {
     let Ok(exe) = system::exe_path() else { return };
     let helper: PathBuf = exe.with_file_name(HELPER_NAME);
     if helper == exe || !helper.exists() {
+        return;
+    }
+    // Unter „Programme“ geht das nur mit Adminrechten; sonst entfernt Windows
+    // die Kopie beim nächsten Start (siehe run_helper).
+    if system::exe_in_protected_folder() && !system::is_elevated() {
         return;
     }
     let _ = thread::Builder::new()

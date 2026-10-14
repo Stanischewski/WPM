@@ -211,6 +211,8 @@ pub struct WpmApp {
     announce_check: bool,
     /// Update von WPM selbst, sobald alle anderen Aufträge durch sind.
     self_update: Option<Package>,
+    /// Ein anderes Update schlug fehl, während das von WPM wartete.
+    self_update_blocked: bool,
 }
 
 impl WpmApp {
@@ -299,6 +301,7 @@ impl WpmApp {
             background_results: Vec::new(),
             announce_check: false,
             self_update: None,
+            self_update_blocked: false,
         };
         app.sync_tray();
 
@@ -528,6 +531,7 @@ impl WpmApp {
         self.status
             .insert(package.id.clone(), PackageStatus::Queued);
         self.self_update = Some(package);
+        self.self_update_blocked = false;
     }
 
     /// Startet das vorgemerkte Selbst-Update (siehe `self_update`).
@@ -540,6 +544,16 @@ impl WpmApp {
         let Some(package) = self.self_update.take() else {
             return;
         };
+        // Versteckt meldet notify_background_results die Fehler ohnehin.
+        if std::mem::take(&mut self.self_update_blocked) && !self.hidden {
+            self.status.remove(&package.id);
+            self.notice(
+                NoticeKind::Info,
+                "Das Update von WPM wurde zurückgestellt, weil andere Updates fehlgeschlagen \
+                 sind. Nach dem Prüfen der Meldungen WPM erneut aktualisieren.",
+            );
+            return;
+        }
         if self.demo {
             self.status.remove(&package.id);
             self.notice(
@@ -572,7 +586,15 @@ impl WpmApp {
             drop_elevation: self.elevated && !needs_admin,
         };
         match self_update::start(&launch) {
-            Ok(()) => self.quit(ctx),
+            Ok(()) => {
+                if !self.hidden {
+                    system::notify(
+                        "WPM wird aktualisiert",
+                        "WPM startet danach von selbst neu – bitte nicht vorher erneut starten.",
+                    );
+                }
+                self.quit(ctx);
+            }
             Err(e) => {
                 self.status.remove(&package.id);
                 self.notice(
@@ -584,6 +606,9 @@ impl WpmApp {
     }
 
     fn notice_self_uninstall(&mut self) {
+        if self.notices.iter().any(|n| n.persistent) {
+            return;
+        }
         self.notices.push(Notice {
             advice: format!(
                 "„Mit Windows starten“ ausschalten, WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) \
@@ -755,6 +780,14 @@ impl WpmApp {
         }
         if request.changes_packages() && result.is_ok() {
             self.needs_refresh = true;
+        }
+        // Schlägt ein anderes Update fehl, während das von WPM wartet, soll man
+        // die Meldung sehen, bevor sich WPM für sein eigenes Update beendet.
+        if self.self_update.is_some()
+            && request.changes_packages()
+            && matches!(&result, Err(failure) if !failure.cancelled)
+        {
+            self.self_update_blocked = true;
         }
         if self.hidden
             && let Some(text) = background_result_text(&request, &result)
@@ -1058,7 +1091,9 @@ impl WpmApp {
     /// Mit Adminrechten in den Hintergrund geschickt: sobald nichts mehr läuft,
     /// ohne Adminrechte im Infobereich neu starten und sich selbst beenden.
     fn leave_elevated_when_idle(&mut self, ctx: &egui::Context) {
-        if !self.leave_elevated || !self.queue.is_empty() {
+        // Beendet sich WPM schon (z. B. für das Selbst-Update, dessen
+        // Hilfsprogramm WPM ohne Adminrechte neu startet), nichts doppelt starten.
+        if self.quitting || !self.leave_elevated || !self.queue.is_empty() {
             return;
         }
         self.leave_elevated = false;
@@ -1196,7 +1231,7 @@ impl WpmApp {
         if self
             .notices
             .iter()
-            .any(|n| n.kind != NoticeKind::Error && !n.admin_hint)
+            .any(|n| n.kind != NoticeKind::Error && !n.admin_hint && !n.persistent)
         {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
@@ -1340,6 +1375,15 @@ impl WpmApp {
                         .clicked()
                     {
                         self.worker.cancel_all();
+                        // Vorgemerkte Updates gehören zur Warteschlange.
+                        for package in self
+                            .self_update
+                            .take()
+                            .into_iter()
+                            .chain(std::mem::take(&mut self.elevate_upgrades))
+                        {
+                            self.status.remove(&package.id);
+                        }
                     }
                     if let Some(started) = self.job_started {
                         ui.label(RichText::new(widgets::elapsed(started)).monospace().weak());
@@ -1435,9 +1479,13 @@ impl eframe::App for WpmApp {
         self.process_events(ctx);
         self.handle_commands(ctx);
         self.handle_close_request(ctx);
+        // Selbst-Update vor dem Neustart mit Adminrechten prüfen: Wird dessen
+        // Bestätigung abgelehnt, reicht start_elevated_upgrades die Updates per
+        // submit() weiter – in self.queue stehen sie erst nach dem nächsten
+        // process_events, und so lange muss das Selbst-Update warten.
+        self.start_self_update(ctx);
         // Gesammelte Updates: Neustart mit Adminrechten, sobald nichts mehr installiert.
         self.start_elevated_upgrades(ctx);
-        self.start_self_update(ctx);
         self.leave_elevated_when_idle(ctx);
         self.update_tray();
         self.notify_background_results();

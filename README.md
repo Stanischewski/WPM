@@ -98,7 +98,10 @@ Zusätzlich baut die GitHub-Action `Build` bei jedem Push eine EXE – unter
 Die Action prüft, testet und baut die EXE und veröffentlicht sie als Release
 `v<Version>` (mit SHA-256-Prüfsumme). Der Download-Link oben zeigt danach
 automatisch auf die neue Version. Gibt es das Release schon, bricht sie ab,
-statt es zu überschreiben.
+statt es zu überschreiben. Ist die Variable `WINGET_PUBLISH` gesetzt, reicht
+sie die neue Version zusätzlich bei winget ein (Pull Request an
+`microsoft/winget-pkgs` über den Fork `Stanischewski/winget-pkgs`, Token im
+Secret `WINGET_TOKEN`).
 
 ### Kommandozeilenoptionen
 
@@ -267,8 +270,9 @@ keine Nachfrage beim Anmelden).
   Programmordner, beendet sich, das Hilfsprogramm führt `winget upgrade` aus
   und startet WPM wieder (im Infobereich, wenn es vorher dort war). Ist WPM
   systemweit installiert (unter „Programme“), fragt Windows dafür einmal nach
-  Adminrechten. Deinstallieren kann sich WPM nicht selbst – dafür WPM beenden
-  und `winget uninstall Stanischewski.WPM` ausführen.
+  Adminrechten. Deinstallieren kann sich WPM nicht selbst – dafür „Mit Windows
+  starten“ ausschalten, WPM beenden und `winget uninstall Stanischewski.WPM`
+  ausführen.
 - **Autostart und Neustarts** verwenden den echten Speicherort von `wpm.exe`
   (Verknüpfungen aufgelöst), damit sie auch nach einem Update über winget
   weiter funktionieren.

@@ -216,6 +216,16 @@ mod imp {
         Ok(())
     }
 
+    pub fn delete_on_reboot(path: &Path) -> io::Result<()> {
+        use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_DELAY_UNTIL_REBOOT, MoveFileExW};
+        let path = wide(path);
+        // SAFETY: Nullterminierter Pfad; ein Null-Ziel bedeutet „löschen“.
+        if unsafe { MoveFileExW(path.as_ptr(), ptr::null(), MOVEFILE_DELAY_UNTIL_REBOOT) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     pub fn wait_for_process(pid: u32, timeout: Duration) {
         // SAFETY: Das Handle wird nach dem Warten geschlossen. Ist der Prozess
         // schon beendet, liefert OpenProcess null und es gibt nichts zu warten.
@@ -552,6 +562,10 @@ mod imp {
         std::thread::sleep(timeout.min(Duration::from_secs(1)));
     }
 
+    pub fn delete_on_reboot(_path: &std::path::Path) -> io::Result<()> {
+        Ok(())
+    }
+
     pub fn listen_for_activation(_on_signal: Box<dyn Fn() + Send>) {}
 
     pub fn signal_running_instance() -> bool {
@@ -641,6 +655,12 @@ pub fn spawn_detached(exe: &std::path::Path, args: &[String]) -> io::Result<()> 
         command.current_dir(directory);
     }
     command.spawn().map(drop)
+}
+
+/// Löscht eine Datei beim nächsten Windows-Start (braucht Adminrechte) –
+/// für Dateien, die gerade laufen und sich deshalb nicht löschen lassen.
+pub fn delete_on_reboot(path: &std::path::Path) -> io::Result<()> {
+    imp::delete_on_reboot(path)
 }
 
 /// Wartet höchstens `timeout`, bis sich der Prozess `pid` beendet hat.

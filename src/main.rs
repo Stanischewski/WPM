@@ -58,6 +58,21 @@ fn main() -> eframe::Result {
         match system::SingleInstance::acquire(wait) {
             Some(guard) => Some(guard),
             None => {
+                // Nach einem Selbst-Update läuft WPM schon wieder (erneut
+                // gestartet): Die laufende Instanz erfährt das Ergebnis nicht.
+                if let Some(Err(summary)) = &self_update {
+                    let text = format!(
+                        "Update von WPM fehlgeschlagen: {summary}\nWPM lief währenddessen \
+                         erneut. WPM beenden und „winget upgrade {}“ ausführen oder das \
+                         Update erneut starten.",
+                        self_update::PACKAGE_ID
+                    );
+                    if background {
+                        system::notify("Update von WPM fehlgeschlagen", &text);
+                    } else {
+                        system::message_box("WPM", &text);
+                    }
+                }
                 // Ein erneuter Start holt das Fenster der laufenden Instanz
                 // nach vorn – auch aus dem Infobereich.
                 if !autostart && !background && !system::signal_running_instance() {

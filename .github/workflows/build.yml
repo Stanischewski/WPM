@@ -119,19 +119,16 @@ jobs:
             dist/wpm.exe.sha256
             THIRD-PARTY-LICENSES.txt
           generate_release_notes: true
+          # Kurz halten: Der Text landet auch in den ReleaseNotes des winget-Manifests.
           body: |
-            **Download:** `wpm.exe` unten unter *Assets* herunterladen und doppelklicken – keine Installation nötig. Voraussetzung: Windows 10/11 mit winget (App-Installer). Funktionen und Anleitung: siehe [README](https://github.com/${{ github.repository }}#readme).
-
-            Die EXE ist nicht digital signiert. Meldet Windows „Der Computer wurde durch Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
-
-            Prüfsumme kontrollieren (optional): in PowerShell `Get-FileHash .\wpm.exe` ausführen und mit `wpm.exe.sha256` vergleichen.
-
-            WPM steht unter der MIT-Lizenz. Die Lizenzhinweise der enthaltenen Open-Source-Bibliotheken stecken in der EXE (Einstellungen → Über → Lizenzen anzeigen) und liegen als `THIRD-PARTY-LICENSES.txt` bei.
+            **Download:** `wpm.exe` unter *Assets* herunterladen und starten, keine Installation nötig (Windows 10/11 mit winget). Anleitung, Hinweis zur Windows-Warnung (die EXE ist nicht signiert) und Lizenzen: siehe [README](https://github.com/${{ github.repository }}#readme).
 
   # Reicht die neue Version bei winget ein (Pull Request an microsoft/winget-pkgs).
   # Erst einschalten, wenn die erste Version dort aufgenommen ist: Variable
   # WINGET_PUBLISH=true und Secret WINGET_TOKEN (klassisches Token mit
   # public_repo und workflow) unter Settings → Secrets and variables → Actions.
+  # Der Fork Stanischewski/winget-pkgs muss bestehen bleiben. Die Action ist
+  # auf einen Commit festgelegt, weil sie das Token mit Schreibrechten erhält.
   # Ein eigener Workflow mit „on: release“ würde nie starten, weil das Release
   # mit dem GITHUB_TOKEN angelegt wird – deshalb hier als weiterer Job.
   winget:
@@ -139,7 +136,7 @@ jobs:
     if: vars.WINGET_PUBLISH == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: vedantmgoyal9/winget-releaser@v2
+      - uses: vedantmgoyal9/winget-releaser@b7370d4d152efdce803a26cc6ca9eee58cb2ad54 # v2
         with:
           identifier: Stanischewski.WPM
           release-tag: ${{ needs.release.outputs.tag }}
