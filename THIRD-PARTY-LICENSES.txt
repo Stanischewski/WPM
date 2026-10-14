@@ -11,14 +11,42 @@ follow, as required by the respective licenses. The source code of every
 library is available at https://crates.io/crates/<name> and in the listed
 repository.
 
-Diese Datei wird mit cargo-about erzeugt (about.toml, about.hbs) – nicht von
-Hand bearbeiten.
+Ergänzende Hinweise / Additional notices
+----------------------------------------
+Rust-Standardbibliothek / Rust standard library (std, core, alloc u. a.),
+fest in wpm.exe eingebunden / statically linked: MIT OR Apache-2.0,
+Copyright: die Mitwirkenden des Rust-Projekts / the Rust project contributors,
+https://github.com/rust-lang/rust. Lizenztexte siehe unten / license texts
+below.
+
+Schriftarten in egui / Fonts bundled with egui (epaint_default_fonts):
+- Hack Regular: Copyright (c) 2018 Source Foundry Authors / Copyright (c) 2003
+  by Bitstream, Inc. All Rights Reserved. MIT License + Bitstream Vera License.
+- Noto Emoji Regular: Copyright 2013 Google Inc. All Rights Reserved.
+  SIL Open Font License 1.1. Noto is a trademark of Google Inc.
+- Ubuntu Light: Copyright 2011 Canonical Ltd. Ubuntu Font Licence 1.0.
+  Ubuntu and Canonical are registered trademarks of Canonical Ltd.
+- emoji-icon-font: Copyright (c) 2014 John Slegers. MIT License.
+
+Copyright-Hinweise, die in den Lizenzdateien der Pakete fehlen / Copyright
+notices missing from the packages' license files:
+- accesskit, accesskit_consumer, accesskit_windows, accesskit_winit:
+  Copyright 2021 The AccessKit Authors. Teile stammen aus Chromium / parts are
+  derived from Chromium: Copyright 2015 The Chromium Authors (BSD-3-Clause).
+- color: Copyright 2024 the Color Authors.
+- linebender_resource_handle: Copyright 2024 the Raw Resource Handle Authors.
+- enum-map, enum-map-derive: Copyright 2017-2023 Kamila Borowska and
+  contributors.
+- glutin_egl_sys, glutin_wgl_sys: enthalten aus der Khronos XML API Registry
+  erzeugte Bindungen / contain bindings generated from the Khronos XML API
+  Registry, Copyright (c) 2013-2018 The Khronos Group Inc.
 
 Übersicht / Overview
 --------------------
 - MIT License (MIT): 153
 - Unicode License v3 (Unicode-3.0): 19
 - Apache License 2.0 (Apache-2.0): 10
+- BSD 3-Clause "New" or "Revised" License (BSD-3-Clause): 3
 - Boost Software License 1.0 (BSL-1.0): 2
 - Bitstream Vera Font License (Bitstream-Vera): 1
 - ISC License (ISC): 1
@@ -1273,6 +1301,47 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+================================================================================
+BSD 3-Clause "New" or "Revised" License (BSD-3-Clause)
+
+Verwendet von / Used by:
+- accesskit 0.24.1 – https://github.com/AccessKit/accesskit
+  Autoren / Authors: The AccessKit contributors
+- accesskit_consumer 0.35.0 – https://github.com/AccessKit/accesskit
+  Autoren / Authors: The AccessKit contributors
+- accesskit_windows 0.32.1 – https://github.com/AccessKit/accesskit
+  Autoren / Authors: The AccessKit contributors
+--------------------------------------------------------------------------------
+
+// Copyright 2015 The Chromium Authors. All rights reserved.
+//
+// Redistribution and use in source and binary forms, with or without
+// modification, are permitted provided that the following conditions are
+// met:
+//
+//    * Redistributions of source code must retain the above copyright
+// notice, this list of conditions and the following disclaimer.
+//    * Redistributions in binary form must reproduce the above
+// copyright notice, this list of conditions and the following disclaimer
+// in the documentation and/or other materials provided with the
+// distribution.
+//    * Neither the name of Google Inc. nor the names of its
+// contributors may be used to endorse or promote products derived from
+// this software without specific prior written permission.
+//
+// THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+// "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+// LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+// A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+// OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+// SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+// LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+// DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+// THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+// (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+// OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
 
 ================================================================================
 Boost Software License 1.0 (BSL-1.0)

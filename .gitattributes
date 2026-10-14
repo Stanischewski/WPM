@@ -1,0 +1,5 @@
+# cargo-about übernimmt die Zeilenenden der Vorlage, und die Action vergleicht
+# Byte für Byte (unter Linux): Vorlage immer mit LF auschecken.
+about.hbs text eol=lf
+# Erzeugte Datei unverändert lassen – einige Lizenztexte haben CRLF-Zeilen.
+THIRD-PARTY-LICENSES.txt -text

@@ -64,7 +64,7 @@ jobs:
             exit 1
           fi
           cat about.log
-          if grep -E "WARN|ERROR" about.log > /dev/null; then
+          if grep -Ei "warn|error" about.log > /dev/null; then
             echo "::error::cargo-about meldet Probleme (siehe oben) – about.toml prüfen"
             exit 1
           fi

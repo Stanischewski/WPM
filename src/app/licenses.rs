@@ -61,7 +61,7 @@ impl WpmApp {
             .id(egui::Id::new("licenses_window"))
             .open(&mut open)
             .collapsible(false)
-            .default_width(780.0)
+            .default_width(800.0)
             .default_height(520.0)
             .show(ctx, |ui| {
                 ui.add(
@@ -132,5 +132,8 @@ mod tests {
         assert!(text.contains("BITSTREAM VERA LICENSE"));
         assert!(text.contains("SIL OPEN FONT LICENSE"));
         assert!(text.contains("UBUNTU FONT LICENCE"));
+        assert!(text.contains("Copyright 2013 Google Inc."));
+        // AccessKit enthält Code aus Chromium (BSD-3-Clause).
+        assert!(text.contains("Copyright 2015 The Chromium Authors"));
     }
 }

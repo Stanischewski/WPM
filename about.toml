@@ -71,7 +71,12 @@ checksum = "2f0015108d68627bd788d313f529c21ff4da2c2c42a5e1f3883acc83480f9002"
 # dpi). Ohne diese Angaben stünde nur der Mustertext ohne Rechteinhaber da.
 
 [accesskit.clarify]
-license = "MIT OR Apache-2.0"
+# Teile stammen aus Chromium (LICENSE.chromium im Repository).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+[[accesskit.clarify.git]]
+path = "LICENSE.chromium"
+license = "BSD-3-Clause"
+checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
 [[accesskit.clarify.git]]
 path = "LICENSE-MIT"
 license = "MIT"
@@ -82,7 +87,12 @@ license = "Apache-2.0"
 checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
 
 [accesskit_consumer.clarify]
-license = "MIT OR Apache-2.0"
+# Teile stammen aus Chromium (LICENSE.chromium im Repository).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+[[accesskit_consumer.clarify.git]]
+path = "LICENSE.chromium"
+license = "BSD-3-Clause"
+checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
 [[accesskit_consumer.clarify.git]]
 path = "LICENSE-MIT"
 license = "MIT"
@@ -93,7 +103,12 @@ license = "Apache-2.0"
 checksum = "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
 
 [accesskit_windows.clarify]
-license = "MIT OR Apache-2.0"
+# Teile stammen aus Chromium (LICENSE.chromium im Repository).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause"
+[[accesskit_windows.clarify.git]]
+path = "LICENSE.chromium"
+license = "BSD-3-Clause"
+checksum = "845022e0c1db1abb41a6ba4cd3c4b674ec290f3359d9d3c78ae558d4c0ed9308"
 [[accesskit_windows.clarify.git]]
 path = "LICENSE-MIT"
 license = "MIT"
