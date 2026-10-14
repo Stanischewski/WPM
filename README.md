@@ -103,6 +103,9 @@ sie die neue Version zusätzlich bei winget ein (Pull Request an
 `microsoft/winget-pkgs` über den Fork `Stanischewski/winget-pkgs`, Token im
 Secret `WINGET_TOKEN`).
 
+Die erste Aufnahme in winget geht von Hand – Manifest und Schritt-für-Schritt-
+Anleitung liegen in [`winget/`](winget/README.md).
+
 ### Kommandozeilenoptionen
 
 | Option | Wirkung |
