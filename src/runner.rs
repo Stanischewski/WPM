@@ -215,6 +215,9 @@ fn winget_program() -> io::Result<std::path::PathBuf> {
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(PathBuf::from)),
+        crate::system::exe_path()
+            .ok()
+            .and_then(|exe| exe.parent().map(PathBuf::from)),
         std::env::current_dir().ok(),
     ]
     .into_iter()

@@ -159,7 +159,14 @@ fn upgrades_table(
                 row.col(|ui| widgets::cell(ui, &package.source));
                 row.col(|ui| {
                     if widgets::status(ui, status.get(&package.id)) {
-                        if ui.button("⬆ Aktualisieren").clicked() {
+                        let mut button = ui.button("⬆ Aktualisieren");
+                        if crate::self_update::is_self(package) {
+                            button = button.on_hover_text(
+                                "WPM beendet sich dafür kurz und startet danach von selbst neu \
+                                 (nach allen anderen Updates).",
+                            );
+                        }
+                        if button.clicked() {
                             actions.push(Action::Upgrade(package.clone()));
                         }
                         if ui

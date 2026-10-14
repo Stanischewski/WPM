@@ -44,7 +44,7 @@ mod imp {
     use windows_sys::Win32::System::Threading::{
         CreateEventExW, CreateMutexW, CreateProcessWithTokenW, EVENT_MODIFY_STATE,
         GetCurrentProcess, INFINITE, OpenEventW, OpenProcess, OpenProcessToken,
-        PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, STARTUPINFOW,
+        PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, STARTUPINFOW,
         SYNCHRONIZATION_SYNCHRONIZE, SetEvent, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::{
@@ -145,7 +145,7 @@ mod imp {
     }
 
     pub fn relaunch_elevated(args: &[String], window: Option<isize>) -> io::Result<()> {
-        let exe = std::env::current_exe()?;
+        let exe = super::exe_path()?;
         let directory = exe.parent().map(Path::as_os_str).unwrap_or_default();
         let parameters = super::join_args(args);
         let (verb, file, parameters, directory) =
@@ -170,13 +170,12 @@ mod imp {
         }
     }
 
-    /// Startet WPM ohne Adminrechte: mit dem Zugriffstoken der Windows-Shell
+    /// Startet `exe` ohne Adminrechte: mit dem Zugriffstoken der Windows-Shell
     /// (Explorer), unter dem auch ein normaler Programmstart liefe.
-    pub fn launch_unelevated(args: &[String]) -> io::Result<()> {
-        let exe = std::env::current_exe()?;
+    pub fn launch_unelevated(exe: &Path, args: &[String]) -> io::Result<()> {
         let directory = exe.parent().map(Path::as_os_str).unwrap_or_default();
         let token = shell_token()?;
-        let application = wide(&exe);
+        let application = wide(exe);
         let mut command_line = wide(format!(
             "{} {}",
             super::quote_arg(&exe.to_string_lossy()),
@@ -215,6 +214,20 @@ mod imp {
             CloseHandle(info.hProcess);
         }
         Ok(())
+    }
+
+    pub fn wait_for_process(pid: u32, timeout: Duration) {
+        // SAFETY: Das Handle wird nach dem Warten geschlossen. Ist der Prozess
+        // schon beendet, liefert OpenProcess null und es gibt nichts zu warten.
+        unsafe {
+            let process = OpenProcess(PROCESS_SYNCHRONIZE, 0, pid);
+            if process.is_null() {
+                return;
+            }
+            let millis = u32::try_from(timeout.as_millis()).unwrap_or(INFINITE - 1);
+            WaitForSingleObject(process, millis);
+            CloseHandle(process);
+        }
     }
 
     /// Primäres Token des Explorer-Prozesses (der Shell des angemeldeten Benutzers).
@@ -453,7 +466,7 @@ mod imp {
     }
 
     pub fn set_run_entry() -> io::Result<()> {
-        let exe = std::env::current_exe()?;
+        let exe = super::exe_path()?;
         let (key, _) = RegKey::predef(HKEY_CURRENT_USER).create_subkey(RUN_KEY)?;
         key.set_value(RUN_VALUE, &format!("\"{}\" --autostart", exe.display()))
     }
@@ -531,8 +544,12 @@ mod imp {
         Err(unsupported())
     }
 
-    pub fn launch_unelevated(_args: &[String]) -> io::Result<()> {
+    pub fn launch_unelevated(_exe: &std::path::Path, _args: &[String]) -> io::Result<()> {
         Err(unsupported())
+    }
+
+    pub fn wait_for_process(_pid: u32, timeout: Duration) {
+        std::thread::sleep(timeout.min(Duration::from_secs(1)));
     }
 
     pub fn listen_for_activation(_on_signal: Box<dyn Fn() + Send>) {}
@@ -603,7 +620,58 @@ pub fn relaunch_elevated(args: &[String], window: Option<isize>) -> io::Result<(
 /// Startet WPM ohne Adminrechte (mit dem Token der Windows-Shell), z. B. um
 /// nach Updates mit Adminrechten normal im Hintergrund weiterzulaufen.
 pub fn launch_unelevated(args: &[String]) -> io::Result<()> {
-    imp::launch_unelevated(args)
+    imp::launch_unelevated(&exe_path()?, args)
+}
+
+/// Startet ein beliebiges Programm ohne Adminrechte (siehe [`launch_unelevated`]).
+pub fn launch_unelevated_exe(exe: &std::path::Path, args: &[String]) -> io::Result<()> {
+    imp::launch_unelevated(exe, args)
+}
+
+/// Startet ein Programm, ohne auf es zu warten (gleiche Rechte wie WPM).
+pub fn spawn_detached(exe: &std::path::Path, args: &[String]) -> io::Result<()> {
+    use std::process::{Command, Stdio};
+    let mut command = Command::new(exe);
+    command
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(directory) = exe.parent() {
+        command.current_dir(directory);
+    }
+    command.spawn().map(drop)
+}
+
+/// Wartet höchstens `timeout`, bis sich der Prozess `pid` beendet hat.
+pub fn wait_for_process(pid: u32, timeout: std::time::Duration) {
+    imp::wait_for_process(pid, timeout);
+}
+
+/// Pfad der laufenden EXE mit aufgelösten Verknüpfungen. winget legt für
+/// portable Programme einen Link unter `WinGet\Links` an, der fehlen oder bei
+/// einem gescheiterten Update wegfallen kann; der echte Speicherort bleibt
+/// dagegen über Updates gleich. Für Autostart und Neustarts daher immer diesen.
+pub fn exe_path() -> io::Result<std::path::PathBuf> {
+    let exe = std::env::current_exe()?;
+    Ok(std::fs::canonicalize(&exe)
+        .map(strip_verbatim_prefix)
+        .unwrap_or(exe))
+}
+
+/// `\\?\C:\…` → `C:\…` und `\\?\UNC\server\…` → `\\server\…`: Die
+/// Langform von `canonicalize` verstehen manche Programme (und der Run-Schlüssel) nicht.
+fn strip_verbatim_prefix(path: std::path::PathBuf) -> std::path::PathBuf {
+    let Some(text) = path.to_str() else {
+        return path;
+    };
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        std::path::PathBuf::from(format!(r"\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix(r"\\?\") {
+        std::path::PathBuf::from(rest)
+    } else {
+        path
+    }
 }
 
 /// Ruft `on_signal` auf, wenn WPM ein zweites Mal gestartet wird.
@@ -729,6 +797,23 @@ fn quote_arg(arg: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verbatim_prefix_is_removed() {
+        use std::path::PathBuf;
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Programme\WPM\wpm.exe")),
+            PathBuf::from(r"C:\Programme\WPM\wpm.exe")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share\wpm.exe")),
+            PathBuf::from(r"\\server\share\wpm.exe")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from("/usr/bin/wpm")),
+            PathBuf::from("/usr/bin/wpm")
+        );
+    }
 
     #[test]
     fn arguments_are_quoted_like_command_line_to_argv() {

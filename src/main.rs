@@ -5,6 +5,7 @@ mod app;
 mod icon;
 mod runner;
 mod scheduler;
+mod self_update;
 mod settings;
 mod system;
 mod tray;
@@ -32,12 +33,17 @@ fn main() -> eframe::Result {
     system::harden_dll_search();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // Als Hilfsprogramm für das Selbst-Update gestartet: kein Fenster.
+    if self_update::run_helper_if_requested(&args) {
+        return Ok(());
+    }
     let has = |flag: &str| args.iter().any(|a| a == flag);
     let settings = Settings::load();
     let demo = has("--demo");
     let autostart = has("--autostart");
     let background = has(BACKGROUND_FLAG);
-    let relaunched = has(ELEVATED_FLAG) || background;
+    let self_update = self_update::outcome(&args);
+    let relaunched = has(ELEVATED_FLAG) || background || self_update.is_some();
 
     // Nur eine Instanz: Autostart und manueller Start sollen sich nicht doppeln.
     // Nach einem Neustart kurz warten, bis die alte Instanz beendet ist.
@@ -66,6 +72,10 @@ fn main() -> eframe::Result {
         }
     };
 
+    if !demo {
+        self_update::remove_leftover_helper();
+    }
+
     // Läuft WPM nach dem Neustart unter einem anderen Konto als vorher? Das
     // passiert, wenn bei der Nachfrage andere Zugangsdaten eingegeben werden
     // oder der Windows-Administratorschutz ein eigenes Admin-Konto verwendet.
@@ -80,6 +90,7 @@ fn main() -> eframe::Result {
         background,
         elevated: system::is_elevated(),
         other_account,
+        self_update,
         resume_upgrades: args
             .iter()
             .filter_map(|a| a.strip_prefix(UPGRADE_FLAG))

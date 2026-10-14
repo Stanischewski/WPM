@@ -93,6 +93,7 @@ const CATALOG: &[CatalogEntry] = &[
         "terminal",
     ),
     entry("WinSCP", "WinSCP.WinSCP", "6.3.5", "ssh"),
+    entry("WPM", "Stanischewski.WPM", "9.9.9", "winget"),
 ];
 
 const fn entry(
@@ -199,6 +200,12 @@ impl Default for DemoRunner {
             pkg("Spotify", "Spotify.Spotify", "1.2.48.405", "winget"),
             pkg("Steam", "Valve.Steam", "2.10.91.91", "winget"),
             pkg("VLC media player", "VideoLAN.VLC", "3.0.21", "winget"),
+            pkg(
+                "WPM",
+                "Stanischewski.WPM",
+                env!("CARGO_PKG_VERSION"),
+                "winget",
+            ),
             pkg(
                 "Windows Terminal",
                 "Microsoft.WindowsTerminal",

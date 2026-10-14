@@ -19,6 +19,7 @@ use eframe::egui::{self, RichText};
 
 use crate::runner::{Runner, WingetRunner};
 use crate::scheduler;
+use crate::self_update;
 use crate::settings::Settings;
 use crate::system;
 use crate::tray::{self, Command, CommandSender, Tray};
@@ -45,6 +46,8 @@ pub struct StartupFlags {
     pub elevated: bool,
     /// Läuft mit Adminrechten eines anderen Benutzerkontos.
     pub other_account: bool,
+    /// Nach einem Selbst-Update neu gestartet: Ergebnis (Fehler als Kurzfassung).
+    pub self_update: Option<Result<(), String>>,
     /// Paket-IDs, deren Update nach dem Neustart mit Adminrechten weiterläuft
     /// (`*` = alle nicht angehefteten).
     pub resume_upgrades: Vec<String>,
@@ -99,6 +102,8 @@ struct Notice {
     log_path: Option<std::path::PathBuf>,
     /// Paket, dessen Anheften angeboten wird.
     pin: Option<Package>,
+    /// Bleibt stehen, bis sie geschlossen wird (Anleitungen).
+    persistent: bool,
     created: Instant,
 }
 
@@ -114,6 +119,7 @@ impl Notice {
             advice: String::new(),
             log_path: None,
             pin: None,
+            persistent: false,
             created: Instant::now(),
         }
     }
@@ -203,6 +209,8 @@ pub struct WpmApp {
     background_results: Vec<(String, bool)>,
     /// Ergebnis der nächsten Update-Suche melden (aus dem Infobereich gestartet).
     announce_check: bool,
+    /// Update von WPM selbst, sobald alle anderen Aufträge durch sind.
+    self_update: Option<Package>,
 }
 
 impl WpmApp {
@@ -290,9 +298,39 @@ impl WpmApp {
             leave_elevated: false,
             background_results: Vec::new(),
             announce_check: false,
+            self_update: None,
         };
         app.sync_tray();
 
+        match flags.self_update {
+            Some(Ok(())) => {
+                let text = format!(
+                    "WPM wurde auf Version {} aktualisiert.",
+                    env!("CARGO_PKG_VERSION")
+                );
+                if flags.minimized {
+                    system::notify("WPM aktualisiert", &text);
+                }
+                app.notice(NoticeKind::Success, text);
+            }
+            Some(Err(summary)) => {
+                if flags.minimized {
+                    system::notify("Update von WPM fehlgeschlagen", &summary);
+                }
+                app.notices.push(Notice {
+                    advice: format!(
+                        "WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) und in einem Terminal \
+                         „winget upgrade {}“ ausführen.",
+                        self_update::PACKAGE_ID
+                    ),
+                    ..Notice::new(
+                        NoticeKind::Error,
+                        format!("Update von WPM fehlgeschlagen: {summary}"),
+                    )
+                });
+            }
+            None => {}
+        }
         if flags.other_account {
             app.notice(
                 NoticeKind::Error,
@@ -429,11 +467,16 @@ impl WpmApp {
             .flat_map(|u| &u.upgrades)
             .map(|p| p.id.as_str())
             .collect();
-        let requested: HashSet<&str> = packages.iter().map(|p| p.id.as_str()).collect();
+        // Ein vorgemerktes Update von WPM selbst setzt die neue Instanz fort.
+        let requested: HashSet<&str> = packages
+            .iter()
+            .chain(&self.self_update)
+            .map(|p| p.id.as_str())
+            .collect();
         let ids = if !all_available.is_empty() && requested == all_available {
             vec![ALL_UPGRADES.to_string()]
         } else {
-            packages.iter().map(|p| p.id.clone()).collect()
+            requested.iter().map(|id| id.to_string()).collect()
         };
         if !self.restart_elevated(ctx, &ids) {
             for package in packages {
@@ -475,8 +518,85 @@ impl WpmApp {
             found
         };
         for package in packages {
-            self.submit(Request::Upgrade { package });
+            self.apply(Action::Upgrade(package));
         }
+    }
+
+    /// Merkt das Update von WPM selbst vor: Es läuft erst, wenn alle anderen
+    /// Aufträge durch sind, weil sich WPM dafür beendet.
+    fn queue_self_update(&mut self, package: Package) {
+        self.status
+            .insert(package.id.clone(), PackageStatus::Queued);
+        self.self_update = Some(package);
+    }
+
+    /// Startet das vorgemerkte Selbst-Update (siehe `self_update`).
+    fn start_self_update(&mut self, ctx: &egui::Context) {
+        let busy = !self.elevate_upgrades.is_empty()
+            || self.queue.iter().any(|job| job.request.changes_packages());
+        if self.self_update.is_none() || busy || self.quitting {
+            return;
+        }
+        let Some(package) = self.self_update.take() else {
+            return;
+        };
+        if self.demo {
+            self.status.remove(&package.id);
+            self.notice(
+                NoticeKind::Info,
+                "Demo-Modus: Hier würde sich WPM beenden, über winget aktualisieren und \
+                 danach von selbst neu starten.",
+            );
+            return;
+        }
+        // Systemweit installiert (unter „Programme“): Das Update braucht Adminrechte.
+        let needs_admin = system::exe_in_protected_folder();
+        if needs_admin && !self.elevated && system::ELEVATION_SUPPORTED {
+            if self.hidden {
+                // Die Windows-Bestätigung braucht ein sichtbares Fenster.
+                self.self_update = Some(package);
+                self.show_window(ctx);
+                return;
+            }
+            if !self.restart_elevated(ctx, &[self_update::PACKAGE_ID.to_string()]) {
+                self.status.remove(&package.id);
+                self.notice(
+                    NoticeKind::Error,
+                    "WPM ist systemweit installiert – für das Update sind Administratorrechte nötig.",
+                );
+            }
+            return;
+        }
+        let launch = self_update::Launch {
+            hidden: self.hidden,
+            drop_elevation: self.elevated && !needs_admin,
+        };
+        match self_update::start(&launch) {
+            Ok(()) => self.quit(ctx),
+            Err(e) => {
+                self.status.remove(&package.id);
+                self.notice(
+                    NoticeKind::Error,
+                    format!("Update von WPM konnte nicht gestartet werden: {e}"),
+                );
+            }
+        }
+    }
+
+    fn notice_self_uninstall(&mut self) {
+        self.notices.push(Notice {
+            advice: format!(
+                "„Mit Windows starten“ ausschalten, WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) \
+                 und dann in einem Terminal „winget uninstall {}“ ausführen – oder WPM unter \
+                 Windows-Einstellungen > Apps deinstallieren.",
+                self_update::PACKAGE_ID
+            ),
+            persistent: true,
+            ..Notice::new(
+                NoticeKind::Info,
+                "WPM kann sich nicht selbst deinstallieren, solange es läuft.",
+            )
+        });
     }
 
     fn installed_ids(&self) -> HashSet<&str> {
@@ -492,6 +612,9 @@ impl WpmApp {
             Action::CheckUpdates => self.submit(self.check_request()),
             Action::LoadInstalled => self.submit(Request::ListInstalled),
             Action::Install(package) => self.submit(Request::Install { package }),
+            Action::Upgrade(package) if self_update::is_self(&package) => {
+                self.queue_self_update(package);
+            }
             Action::Upgrade(package) if self.wants_elevation() => {
                 // Erst sammeln: alle Updates dieses Klicks laufen nach einem
                 // einzigen Neustart mit Adminrechten.
@@ -502,6 +625,9 @@ impl WpmApp {
                 }
             }
             Action::Upgrade(package) => self.submit(Request::Upgrade { package }),
+            Action::Uninstall(package) if self_update::is_self(&package) => {
+                self.notice_self_uninstall();
+            }
             Action::Uninstall(package) => {
                 if self.settings.confirm_uninstall {
                     self.confirm_uninstall = Some(package);
@@ -1040,6 +1166,7 @@ impl WpmApp {
         self.notices.retain(|n| {
             n.kind == NoticeKind::Error
                 || n.admin_hint
+                || n.persistent
                 || n.created.elapsed() < Duration::from_secs(8)
         });
         // Höchstens drei Fehler und vier Meldungen insgesamt. Entfernt werden
@@ -1310,6 +1437,7 @@ impl eframe::App for WpmApp {
         self.handle_close_request(ctx);
         // Gesammelte Updates: Neustart mit Adminrechten, sobald nichts mehr installiert.
         self.start_elevated_upgrades(ctx);
+        self.start_self_update(ctx);
         self.leave_elevated_when_idle(ctx);
         self.update_tray();
         self.notify_background_results();

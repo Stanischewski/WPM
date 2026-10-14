@@ -110,6 +110,7 @@ statt es zu überschreiben.
 | `--elevated` | Intern: kennzeichnet den mit Adminrechten neu gestarteten Prozess. |
 | `--background` | Intern: unsichtbar im Infobereich starten (nach dem Schließen der Instanz mit Adminrechten). |
 | `--upgrade=<ID>` | Intern: Update, das nach dem Neustart mit Adminrechten fortgesetzt wird (`*` = alle). |
+| `--self-update-…` | Intern: Hilfsprogramm für das Selbst-Update und dessen Rückmeldung an das neu gestartete WPM. |
 
 WPM läuft nur einmal. Ein zweiter Start holt das Fenster der laufenden Instanz
 nach vorn (beim Autostart passiert nichts).
@@ -231,6 +232,7 @@ src/
 ├── runner.rs          winget als Prozess starten, Ausgabe live lesen
 ├── worker.rs          Warteschlange im Hintergrund-Thread
 ├── scheduler.rs       regelmäßige Update-Prüfung
+├── self_update.rs     WPM über winget aktualisieren (Hilfsprogramm)
 ├── settings.rs        Einstellungen (%APPDATA%\WPM\settings.json)
 ├── tray.rs            Symbol im Infobereich
 └── system.rs          Autostart, Adminrechte, Einzelinstanz, Benachrichtigungen
@@ -258,6 +260,18 @@ keine Nachfrage beim Anmelden).
   Adminrechten läuft. Nachgeladene DLLs kommen nur aus `System32`.
 - **Hintergrundprüfung** läuft, solange WPM läuft – auch minimiert oder
   versteckt im Infobereich.
+- **WPM aktualisiert sich selbst:** Ist WPM über winget installiert
+  (`Stanischewski.WPM`), erscheint es selbst unter den Updates. Weil winget die
+  laufende `wpm.exe` nicht ersetzen kann, läuft dieses Update als letztes:
+  WPM legt eine Kopie von sich als Hilfsprogramm (`wpm-update.exe`) in seinen
+  Programmordner, beendet sich, das Hilfsprogramm führt `winget upgrade` aus
+  und startet WPM wieder (im Infobereich, wenn es vorher dort war). Ist WPM
+  systemweit installiert (unter „Programme“), fragt Windows dafür einmal nach
+  Adminrechten. Deinstallieren kann sich WPM nicht selbst – dafür WPM beenden
+  und `winget uninstall Stanischewski.WPM` ausführen.
+- **Autostart und Neustarts** verwenden den echten Speicherort von `wpm.exe`
+  (Verknüpfungen aufgelöst), damit sie auch nach einem Update über winget
+  weiter funktionieren.
 
 ## Mögliche nächste Schritte
 

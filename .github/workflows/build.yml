@@ -82,6 +82,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
       - name: Version ermitteln
@@ -125,3 +127,20 @@ jobs:
             Prüfsumme kontrollieren (optional): in PowerShell `Get-FileHash .\wpm.exe` ausführen und mit `wpm.exe.sha256` vergleichen.
 
             WPM steht unter der MIT-Lizenz. Die Lizenzhinweise der enthaltenen Open-Source-Bibliotheken stecken in der EXE (Einstellungen → Über → Lizenzen anzeigen) und liegen als `THIRD-PARTY-LICENSES.txt` bei.
+
+  # Reicht die neue Version bei winget ein (Pull Request an microsoft/winget-pkgs).
+  # Erst einschalten, wenn die erste Version dort aufgenommen ist: Variable
+  # WINGET_PUBLISH=true und Secret WINGET_TOKEN (klassisches Token mit
+  # public_repo und workflow) unter Settings → Secrets and variables → Actions.
+  # Ein eigener Workflow mit „on: release“ würde nie starten, weil das Release
+  # mit dem GITHUB_TOKEN angelegt wird – deshalb hier als weiterer Job.
+  winget:
+    needs: release
+    if: vars.WINGET_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: vedantmgoyal9/winget-releaser@v2
+        with:
+          identifier: Stanischewski.WPM
+          release-tag: ${{ needs.release.outputs.tag }}
+          token: ${{ secrets.WINGET_TOKEN }}
