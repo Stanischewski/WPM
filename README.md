@@ -88,7 +88,9 @@ Zusätzlich baut die GitHub-Action `Build` bei jedem Push eine EXE – unter
 ### Neue Version veröffentlichen
 
 1. Version in `Cargo.toml` erhöhen, einmal `cargo build` ausführen und
-   `Cargo.toml` und `Cargo.lock` auf `main` committen.
+   `Cargo.toml` und `Cargo.lock` auf `main` committen. Haben sich
+   Abhängigkeiten geändert, vorher die Lizenzhinweise neu erzeugen (siehe
+   [Lizenz](#lizenz)) – sonst schlägt die Action fehl.
 2. Tag `v<Version>` pushen (z. B. `git tag v0.3.0 && git push origin v0.3.0`)
    – oder unter *Actions → Build → Run workflow* den Branch `main` wählen und
    „Release veröffentlichen“ ankreuzen.
@@ -268,3 +270,22 @@ keine Nachfrage beim Anmelden).
 
 [MIT](LICENSE) – darf frei genutzt, verändert und weitergegeben werden, auch
 kommerziell, solange der Lizenzhinweis erhalten bleibt; ohne Gewähr.
+
+WPM enthält Open-Source-Bibliotheken anderer Autorinnen und Autoren (egui,
+winit, windows-rs, die Schriftarten von egui u. a.). Ihre Lizenzhinweise stehen
+in [THIRD-PARTY-LICENSES.txt](THIRD-PARTY-LICENSES.txt), liegen jedem Release
+bei und sind in die EXE eingebettet: *Einstellungen → Über → Lizenzen
+anzeigen*. So sind sie auch dabei, wenn nur `wpm.exe` weitergegeben wird.
+
+Die Datei wird mit [cargo-about](https://github.com/EmbarkStudios/cargo-about)
+erzeugt – nur aus den Abhängigkeiten, die tatsächlich in der Windows-EXE
+landen. Nach Änderungen an den Abhängigkeiten neu erzeugen:
+
+```sh
+cargo install cargo-about --locked --features cli --version 0.9.2
+cargo about generate --locked --fail -o THIRD-PARTY-LICENSES.txt about.hbs
+```
+
+`about.toml` legt die akzeptierten Lizenzen fest und ergänzt Lizenzdateien, die
+cargo-about nicht selbst findet (abgesichert über Prüfsummen). Die Action
+prüft bei jedem Push, ob die Datei noch aktuell ist.

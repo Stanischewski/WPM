@@ -1,0 +1,37 @@
+Lizenzen von Drittanbietern – Third-party licenses
+==================================================
+
+WPM (wpm.exe) enthält Open-Source-Bibliotheken anderer Autorinnen und Autoren.
+Hier stehen deren Lizenzhinweise, wie es die jeweiligen Lizenzen verlangen.
+Der Quelltext jeder Bibliothek ist unter https://crates.io/crates/<Name> und
+im jeweils genannten Repository erhältlich.
+
+WPM includes the open-source libraries listed below. Their license notices
+follow, as required by the respective licenses. The source code of every
+library is available at https://crates.io/crates/<name> and in the listed
+repository.
+
+Diese Datei wird mit cargo-about erzeugt (about.toml, about.hbs) – nicht von
+Hand bearbeiten.
+
+Übersicht / Overview
+--------------------
+{{#each overview}}
+- {{{name}}} ({{{id}}}): {{count}}
+{{/each}}
+{{#each licenses}}
+
+================================================================================
+{{{name}}} ({{{id}}})
+
+Verwendet von / Used by:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}} – {{{crate.repository}}}{{/if}}
+{{#if crate.authors}}
+  Autoren / Authors: {{#each crate.authors}}{{{this}}}{{#unless @last}}, {{/unless}}{{/each}}
+{{/if}}
+{{/each}}
+--------------------------------------------------------------------------------
+
+{{{text}}}
+{{/each}}

@@ -304,6 +304,19 @@ impl WpmApp {
 
             section(ui, "Über", |ui| {
                 ui.label(format!("WPM {}", env!("CARGO_PKG_VERSION")));
+                ui.horizontal(|ui| {
+                    ui.label("Freie Software unter der MIT-Lizenz.");
+                    if ui
+                        .small_button("Lizenzen anzeigen")
+                        .on_hover_text(
+                            "Lizenz von WPM und Lizenzhinweise aller enthaltenen \
+                             Open-Source-Bibliotheken",
+                        )
+                        .clicked()
+                    {
+                        self.show_licenses = true;
+                    }
+                });
                 if let Some(path) = Settings::path() {
                     ui.label(RichText::new(format!("Einstellungen: {}", path.display())).weak());
                 }

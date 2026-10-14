@@ -47,11 +47,37 @@ jobs:
           name: wpm-windows-x64
           path: target/release/wpm.exe
 
+  # Passt THIRD-PARTY-LICENSES.txt (in die EXE eingebettet) noch zu den
+  # Abhängigkeiten? Sonst mit cargo-about neu erzeugen, siehe README.
+  licenses:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.2
+      - name: Lizenzhinweise aktuell?
+        run: |
+          if ! cargo about generate --locked --fail -o generated.txt about.hbs 2> about.log; then
+            cat about.log
+            exit 1
+          fi
+          cat about.log
+          if grep -E "WARN|ERROR" about.log > /dev/null; then
+            echo "::error::cargo-about meldet Probleme (siehe oben) – about.toml prüfen"
+            exit 1
+          fi
+          if ! diff -u THIRD-PARTY-LICENSES.txt generated.txt; then
+            echo "::error::THIRD-PARTY-LICENSES.txt ist veraltet – mit 'cargo about generate --locked --fail -o THIRD-PARTY-LICENSES.txt about.hbs' neu erzeugen und committen"
+            exit 1
+          fi
+
   # Veröffentlicht die EXE als Release – beim Push eines Tags `v<Version>`
   # oder per „Run workflow“ mit „Release veröffentlichen“. Der Download-Link
   # im README (releases/latest/download/wpm.exe) zeigt dann darauf.
   release:
-    needs: windows
+    needs: [windows, licenses]
     if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release)
     runs-on: ubuntu-latest
     permissions:
@@ -89,6 +115,7 @@ jobs:
           files: |
             dist/wpm.exe
             dist/wpm.exe.sha256
+            THIRD-PARTY-LICENSES.txt
           generate_release_notes: true
           body: |
             **Download:** `wpm.exe` unten unter *Assets* herunterladen und doppelklicken – keine Installation nötig. Voraussetzung: Windows 10/11 mit winget (App-Installer). Funktionen und Anleitung: siehe [README](https://github.com/${{ github.repository }}#readme).
@@ -96,3 +123,5 @@ jobs:
             Die EXE ist nicht digital signiert. Meldet Windows „Der Computer wurde durch Windows geschützt“, auf „Weitere Informationen“ → „Trotzdem ausführen“ klicken.
 
             Prüfsumme kontrollieren (optional): in PowerShell `Get-FileHash .\wpm.exe` ausführen und mit `wpm.exe.sha256` vergleichen.
+
+            WPM steht unter der MIT-Lizenz. Die Lizenzhinweise der enthaltenen Open-Source-Bibliotheken stecken in der EXE (Einstellungen → Über → Lizenzen anzeigen) und liegen als `THIRD-PARTY-LICENSES.txt` bei.

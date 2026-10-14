@@ -2,6 +2,7 @@
 
 mod details;
 mod installed;
+mod licenses;
 mod log;
 mod search;
 mod settings_tab;
@@ -161,6 +162,8 @@ pub struct WpmApp {
 
     details: Option<DetailsView>,
     confirm_uninstall: Option<Package>,
+    /// Fenster „Lizenzen“ ist offen.
+    show_licenses: bool,
     pins: Option<Vec<Pin>>,
     sources: Option<Vec<Source>>,
     winget_version: Option<Result<String, String>>,
@@ -262,6 +265,7 @@ impl WpmApp {
             status: HashMap::new(),
             details: None,
             confirm_uninstall: None,
+            show_licenses: false,
             pins: None,
             sources: None,
             winget_version: None,
@@ -1349,6 +1353,7 @@ impl eframe::App for WpmApp {
 
         self.details_window(&ctx);
         self.confirm_uninstall_dialog(&ctx);
+        self.licenses_window(&ctx);
     }
 }
 
