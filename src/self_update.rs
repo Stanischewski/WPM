@@ -40,9 +40,17 @@ pub fn is_self(package: &Package) -> bool {
 
 fn is_self_id(id: &str) -> bool {
     let own = PACKAGE_ID.to_lowercase();
+    let id = id.to_lowercase();
+    // Aus einer lokalen Manifest-Datei installiert oder keiner Quelle
+    // zugeordnet: winget zeigt dann den Eintrag aus „Apps“, z. B.
+    // `ARP\User\X64\Stanischewski.WPM__DefaultSource`.
+    if let Some(entry) = id.strip_prefix(r"arp\") {
+        let name = entry.rsplit('\\').next().unwrap_or_default();
+        return name.trim_end_matches('…').starts_with(&format!("{own}_"));
+    }
     match id.strip_suffix('…') {
-        Some(prefix) => prefix.len() >= 3 && own.starts_with(&prefix.to_lowercase()),
-        None => id.eq_ignore_ascii_case(PACKAGE_ID),
+        Some(prefix) => prefix.len() >= 3 && own.starts_with(prefix),
+        None => id == own,
     }
 }
 
@@ -195,6 +203,18 @@ mod tests {
         assert!(!is_self(&package("Stanischewski.WPMX")));
         assert!(!is_self(&package("Other.WPM")));
         assert!(!is_self(&package("S…")));
+        // Einträge aus „Apps“ (lokal installiert bzw. keiner Quelle zugeordnet).
+        assert!(is_self(&package(
+            r"ARP\User\X64\Stanischewski.WPM__DefaultSource"
+        )));
+        assert!(is_self(&package(
+            r"ARP\Machine\X64\Stanischewski.WPM_Microsoft.Winget.Source_8wekyb3d8bbwe"
+        )));
+        assert!(is_self(&package(r"ARP\User\X64\Stanischewski.WPM__Def…")));
+        assert!(!is_self(&package(
+            r"ARP\User\X64\Stanischewski.WPMX_DefaultSource"
+        )));
+        assert!(!is_self(&package(r"ARP\Machine\X64\Druckerhilfe XY_is1")));
     }
 
     #[test]
