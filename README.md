@@ -7,6 +7,11 @@ doppelklicken – eine Installation ist nicht nötig. Läuft unter Windows 10
 und 11. Ältere Versionen und Änderungen stehen unter
 [Releases](https://github.com/Stanischewski/WPM/releases).
 
+> **English:** WPM is a simple graphical interface for winget. Download it via
+> the link above and run it, no installation needed. The interface is available
+> in English and German and follows the Windows display language; change it
+> under *Settings → General → Language*.
+
 > **„Der Computer wurde durch Windows geschützt“?** Die EXE ist nicht digital
 > signiert, deshalb warnt Windows SmartScreen beim ersten Start. Auf
 > **„Weitere Informationen“** und dann **„Trotzdem ausführen“** klicken. Auch
@@ -32,7 +37,7 @@ mit einem Klick installieren, fertig.
 | **Updates** | Verfügbare Updates anzeigen, einzeln, ausgewählt oder alle installieren. Pakete „anheften“ (Update ignorieren) bzw. wieder lösen. |
 | **Installiert** | Alle installierten Programme, filterbar nach Name/ID, mit Details, Aktualisieren und Deinstallieren (mit Rückfrage). |
 | **Suchen** | Neue Pakete in winget und/oder Microsoft Store finden und installieren. Bereits installierte Pakete sind markiert. |
-| **Einstellungen** | Mit Windows starten (optional unsichtbar im Infobereich), Symbol im Infobereich und Weiterlaufen im Hintergrund (siehe unten), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
+| **Einstellungen** | Sprache (wie Windows/Deutsch/Englisch), Mit Windows starten (optional unsichtbar im Infobereich), Symbol im Infobereich und Weiterlaufen im Hintergrund (siehe unten), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
 | **Protokoll** | Jeder ausgeführte winget-Befehl mit seiner vollständigen Ausgabe. |
 
 Aufträge landen in einer Warteschlange und laufen nacheinander (winget mag
@@ -240,6 +245,7 @@ src/
 ├── scheduler.rs       regelmäßige Update-Prüfung
 ├── self_update.rs     WPM über winget aktualisieren (Hilfsprogramm)
 ├── settings.rs        Einstellungen (%APPDATA%\WPM\settings.json)
+├── i18n.rs            Sprache der Oberfläche (Deutsch/Englisch)
 ├── tray.rs            Symbol im Infobereich
 └── system.rs          Autostart, Adminrechte, Einzelinstanz, Benachrichtigungen
 ```
@@ -264,6 +270,13 @@ keine Nachfrage beim Anmelden).
   bzw. `PATH` ohne Programmordner und aktuelles Verzeichnis), damit nie eine
   gleichnamige Datei aus dem Programmordner (z. B. dem Download-Ordner) mit
   Adminrechten läuft. Nachgeladene DLLs kommen nur aus `System32`.
+- **Sprache:** Die Oberfläche gibt es auf Deutsch und Englisch. Vorgabe ist
+  „Wie Windows“: bei deutscher Anzeigesprache von Windows Deutsch, sonst
+  Englisch. Umstellen unter *Einstellungen → Allgemein → Sprache*, der Wechsel
+  wirkt sofort. Was winget selbst ausgibt (Protokoll, Felder unter „Details“,
+  manche Fehlermeldungen), bleibt in der Sprache von Windows. Im Code steht
+  jeder Text direkt auf Deutsch und Englisch: `tr!("Suchen", "Search")`, mit
+  Platzhaltern `trf!("{n} Pakete", "{n} packages")`.
 - **Hintergrundprüfung** läuft, solange WPM läuft – auch minimiert oder
   versteckt im Infobereich.
 - **WPM aktualisiert sich selbst:** Ist WPM über winget installiert
