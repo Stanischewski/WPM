@@ -4,7 +4,7 @@ use eframe::egui::{self, RichText};
 
 use super::WpmApp;
 use super::widgets::section;
-use crate::settings::{InstallMode, Scope, Settings, SourceFilter, Theme};
+use crate::settings::{InstallMode, Language, Scope, Settings, SourceFilter, Theme};
 use crate::system;
 use crate::tray;
 use crate::winget::Request;
@@ -45,6 +45,21 @@ impl WpmApp {
             let can_restart = self.can_restart_elevated();
             section(ui, "Allgemein", |ui| {
                 let settings = &mut self.settings;
+                egui::Grid::new("appearance_grid")
+                    .num_columns(2)
+                    .spacing([16.0, 8.0])
+                    .show(ui, |ui| {
+                        // Auch auf Englisch auffindbar, falls jemand die Sprache
+                        // versehentlich umgestellt hat.
+                        ui.label(tr!("Sprache (Language):", "Language:"));
+                        combo(ui, "language", &mut settings.language, &Language::ALL, Language::label);
+                        ui.end_row();
+                        ui.label("Darstellung:");
+                        combo(ui, "theme", &mut settings.theme, &Theme::ALL, Theme::label);
+                        ui.end_row();
+                    });
+                ui.add_space(4.0);
+
                 let in_tray = settings.tray_icon && tray::SUPPORTED;
                 ui.add_enabled_ui(system::AUTOSTART_SUPPORTED, |ui| {
                     ui.checkbox(&mut settings.autostart, "Mit Windows starten");
@@ -143,12 +158,6 @@ impl WpmApp {
                 })
                 .response
                 .on_disabled_hover_text("Nur unter Windows verfügbar");
-
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    ui.label("Darstellung:");
-                    combo(ui, "theme", &mut settings.theme, &Theme::ALL, Theme::label);
-                });
             });
 
             section(ui, "Updates", |ui| {
@@ -322,11 +331,14 @@ impl WpmApp {
                 }
                 ui.add_space(4.0);
                 if ui.button("Standardwerte wiederherstellen").clicked() {
+                    // Die Sprache bleibt: Sonst wechselt sie ungefragt.
                     let autostart = self.settings.autostart;
                     let background_hint_shown = self.settings.background_hint_shown;
+                    let language = self.settings.language;
                     self.settings = Settings {
                         autostart,
                         background_hint_shown,
+                        language,
                         ..Settings::default()
                     };
                 }

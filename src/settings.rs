@@ -6,6 +6,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::{self, Lang};
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum InstallMode {
     /// winget entscheidet (meist mit Fortschrittsfenster des Installers).
@@ -22,9 +24,18 @@ impl InstallMode {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Default => "Standard (Installer zeigen Fortschritt)",
-            Self::Silent => "Still – ohne Installer-Fenster (empfohlen)",
-            Self::Interactive => "Interaktiv (mit allen Dialogen)",
+            Self::Default => tr!(
+                "Standard (Installer zeigen Fortschritt)",
+                "Default (installers show progress)"
+            ),
+            Self::Silent => tr!(
+                "Still – ohne Installer-Fenster (empfohlen)",
+                "Silent – no installer windows (recommended)"
+            ),
+            Self::Interactive => tr!(
+                "Interaktiv (mit allen Dialogen)",
+                "Interactive (with all dialogs)"
+            ),
         }
     }
 }
@@ -42,9 +53,9 @@ impl Scope {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Any => "Automatisch",
-            Self::User => "Nur aktueller Benutzer",
-            Self::Machine => "Alle Benutzer (System)",
+            Self::Any => tr!("Automatisch", "Automatic"),
+            Self::User => tr!("Nur aktueller Benutzer", "Current user only"),
+            Self::Machine => tr!("Alle Benutzer (System)", "All users (machine)"),
         }
     }
 }
@@ -62,7 +73,7 @@ impl SourceFilter {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::All => "Alle Quellen",
+            Self::All => tr!("Alle Quellen", "All sources"),
             Self::Winget => "winget",
             Self::MsStore => "Microsoft Store (msstore)",
         }
@@ -90,9 +101,9 @@ impl Theme {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::System => "Wie Windows",
-            Self::Light => "Hell",
-            Self::Dark => "Dunkel",
+            Self::System => tr!("Wie Windows", "Same as Windows"),
+            Self::Light => tr!("Hell", "Light"),
+            Self::Dark => tr!("Dunkel", "Dark"),
         }
     }
 
@@ -102,6 +113,38 @@ impl Theme {
             Self::System => ThemePreference::System,
             Self::Light => ThemePreference::Light,
             Self::Dark => ThemePreference::Dark,
+        }
+    }
+}
+
+/// Sprache der Oberfläche.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Language {
+    /// Wie die Anzeigesprache von Windows (Deutsch oder sonst Englisch).
+    #[default]
+    System,
+    German,
+    English,
+}
+
+impl Language {
+    pub const ALL: [Self; 3] = [Self::System, Self::German, Self::English];
+
+    pub fn label(self) -> &'static str {
+        match (self, i18n::system()) {
+            (Self::System, Lang::De) => tr!("Wie Windows (Deutsch)", "Same as Windows (German)"),
+            (Self::System, Lang::En) => tr!("Wie Windows (Englisch)", "Same as Windows (English)"),
+            // Jede Sprache in ihrer eigenen Schreibweise, damit man sie findet.
+            (Self::German, _) => "Deutsch",
+            (Self::English, _) => "English",
+        }
+    }
+
+    pub fn resolve(self) -> Lang {
+        match self {
+            Self::System => i18n::system(),
+            Self::German => Lang::De,
+            Self::English => Lang::En,
         }
     }
 }
@@ -141,6 +184,7 @@ pub struct Settings {
     /// Programme ohne winget-Quelle (z. B. Treiber, Systemkomponenten) ausblenden.
     pub hide_unmanaged: bool,
     pub theme: Theme,
+    pub language: Language,
 }
 
 impl Default for Settings {
@@ -164,6 +208,7 @@ impl Default for Settings {
             confirm_uninstall: true,
             hide_unmanaged: false,
             theme: Theme::System,
+            language: Language::System,
         }
     }
 }
@@ -200,8 +245,12 @@ impl Settings {
     }
 
     pub fn save(&self) -> io::Result<()> {
-        let path =
-            Self::path().ok_or_else(|| io::Error::other("Kein Konfigurationsordner gefunden"))?;
+        let path = Self::path().ok_or_else(|| {
+            io::Error::other(tr!(
+                "Kein Konfigurationsordner gefunden",
+                "No configuration folder found"
+            ))
+        })?;
         if let Some(dir) = path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -240,5 +289,23 @@ mod tests {
         // Ältere Dateien kennen den Infobereich noch nicht.
         assert!(settings.tray_icon && settings.close_to_tray);
         assert!(!settings.background_hint_shown);
+        // Ältere Dateien kennen die Sprache nicht: wie Windows.
+        assert_eq!(settings.language, Language::System);
+    }
+
+    #[test]
+    fn language_choice_is_saved_and_resolved() {
+        let settings = Settings {
+            language: Language::English,
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).unwrap();
+        assert!(json.contains(r#""language":"English""#));
+        assert_eq!(
+            Settings::from_json(&json).unwrap().language.resolve(),
+            Lang::En
+        );
+        assert_eq!(Language::German.resolve(), Lang::De);
+        assert_eq!(Language::System.resolve(), i18n::system());
     }
 }

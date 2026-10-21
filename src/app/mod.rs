@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::{self, RichText};
 
+use crate::i18n;
 use crate::runner::{Runner, WingetRunner};
 use crate::scheduler;
 use crate::self_update;
@@ -972,6 +973,10 @@ impl WpmApp {
         if self.settings.theme != before.theme {
             ctx.set_theme(self.settings.theme.to_egui());
         }
+        if self.settings.language != before.language {
+            // Fenstertitel und Infobereich ziehen beim nächsten Bild nach.
+            i18n::set(self.settings.language.resolve());
+        }
         if self.settings.tray_icon != before.tray_icon {
             self.sync_tray();
         }
@@ -1127,6 +1132,7 @@ impl WpmApp {
             },
         };
         let state = tray::State {
+            lang: i18n::current(),
             status,
             badge: count.is_some_and(|n| n > 0),
             checking: self.busy(|r| matches!(r, Request::CheckUpdates { .. })),

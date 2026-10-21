@@ -1,6 +1,9 @@
 // Im Release-Build ohne zusätzliches Konsolenfenster starten.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[macro_use]
+mod i18n;
+
 mod app;
 mod icon;
 mod runner;
@@ -33,12 +36,13 @@ fn main() -> eframe::Result {
     system::harden_dll_search();
 
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let settings = Settings::load();
+    i18n::set(settings.language.resolve());
     // Als Hilfsprogramm für das Selbst-Update gestartet: kein Fenster.
     if self_update::run_helper_if_requested(&args) {
         return Ok(());
     }
     let has = |flag: &str| args.iter().any(|a| a == flag);
-    let settings = Settings::load();
     let demo = has("--demo");
     let autostart = has("--autostart");
     let background = has(BACKGROUND_FLAG);
@@ -115,7 +119,10 @@ fn main() -> eframe::Result {
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_title("WPM – Windows-Paketmanager")
+            .with_title(tr!(
+                "WPM – Windows-Paketmanager",
+                "WPM – Windows Package Manager"
+            ))
             .with_app_id("wpm")
             .with_inner_size([1100.0, 700.0])
             .with_min_inner_size([760.0, 420.0])

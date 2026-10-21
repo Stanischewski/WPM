@@ -5,6 +5,8 @@ use std::sync::mpsc::Sender;
 
 use eframe::egui;
 
+use crate::i18n::Lang;
+
 pub const SUPPORTED: bool = cfg!(windows);
 
 /// Befehle aus dem Infobereich oder von einem erneuten Programmstart.
@@ -18,8 +20,10 @@ pub enum Command {
 }
 
 /// Was das Symbol gerade anzeigt.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
+    /// Sprache der Menüeinträge.
+    pub lang: Lang,
     /// Kurzer Status, z. B. „3 Updates verfügbar“.
     pub status: String,
     /// Punkt am Symbol: Updates verfügbar.
@@ -59,6 +63,7 @@ mod imp {
     };
 
     use super::{Command, CommandSender, State};
+    use crate::i18n;
 
     const SHOW: &str = "show";
     const CHECK: &str = "check";
@@ -67,37 +72,52 @@ mod imp {
     pub struct Tray {
         icon: TrayIcon,
         status: MenuItem,
+        show: MenuItem,
         check: MenuItem,
+        quit: MenuItem,
         state: State,
     }
 
     impl Tray {
         pub fn new(commands: &CommandSender) -> Result<Self, String> {
             install_handlers(commands);
+            let lang = i18n::current();
             let status = MenuItem::new("WPM", false, None);
-            let check = MenuItem::with_id(CHECK, "Nach Updates suchen", true, None);
+            let show = MenuItem::with_id(SHOW, show_text(), true, None);
+            let check = MenuItem::with_id(CHECK, check_text(), true, None);
+            let quit = MenuItem::with_id(QUIT, quit_text(), true, None);
             let menu = Menu::with_items(&[
                 &status,
                 &PredefinedMenuItem::separator(),
-                &MenuItem::with_id(SHOW, "WPM öffnen", true, None),
+                &show,
                 &check,
                 &PredefinedMenuItem::separator(),
-                &MenuItem::with_id(QUIT, "Beenden", true, None),
+                &quit,
             ])
             .map_err(|e| e.to_string())?;
             let icon = TrayIconBuilder::new()
                 .with_menu(Box::new(menu))
                 // Linksklick öffnet das Fenster, Rechtsklick zeigt das Menü.
                 .with_menu_on_left_click(false)
-                .with_tooltip("WPM – Windows-Paketmanager")
+                .with_tooltip(tr!(
+                    "WPM – Windows-Paketmanager",
+                    "WPM – Windows Package Manager"
+                ))
                 .with_icon(icon(false)?)
                 .build()
                 .map_err(|e| e.to_string())?;
             Ok(Self {
                 icon,
                 status,
+                show,
                 check,
-                state: State::default(),
+                quit,
+                state: State {
+                    lang,
+                    status: String::new(),
+                    badge: false,
+                    checking: false,
+                },
             })
         }
 
@@ -105,6 +125,11 @@ mod imp {
         pub fn update(&mut self, state: State) {
             if state == self.state {
                 return;
+            }
+            if state.lang != self.state.lang {
+                self.show.set_text(show_text());
+                self.check.set_text(check_text());
+                self.quit.set_text(quit_text());
             }
             if state.status != self.state.status {
                 self.status.set_text(&state.status);
@@ -123,6 +148,18 @@ mod imp {
             self.check.set_enabled(!state.checking);
             self.state = state;
         }
+    }
+
+    fn show_text() -> &'static str {
+        tr!("WPM öffnen", "Open WPM")
+    }
+
+    fn check_text() -> &'static str {
+        tr!("Nach Updates suchen", "Check for updates")
+    }
+
+    fn quit_text() -> &'static str {
+        tr!("Beenden", "Quit")
     }
 
     fn icon(badge: bool) -> Result<Icon, String> {
@@ -178,7 +215,7 @@ mod imp {
 
     impl Tray {
         pub fn new(_commands: &CommandSender) -> Result<Self, String> {
-            Err("nur unter Windows verfügbar".into())
+            Err(tr!("nur unter Windows verfügbar", "only available on Windows").into())
         }
 
         pub fn update(&mut self, _state: State) {}
