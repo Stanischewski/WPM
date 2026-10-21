@@ -123,6 +123,8 @@ jobs:
           body: |
             **Download:** `wpm.exe` unter *Assets* herunterladen und starten, keine Installation nötig (Windows 10/11 mit winget). Anleitung, Hinweis zur Windows-Warnung (die EXE ist nicht signiert) und Lizenzen: siehe [README](https://github.com/${{ github.repository }}#readme).
 
+            **Download:** get `wpm.exe` under *Assets* and run it, no installation needed (Windows 10/11 with winget). Instructions, a note on the Windows warning (the EXE is not signed) and licenses: see the [README](https://github.com/${{ github.repository }}#readme).
+
   # Reicht die neue Version bei winget ein (Pull Request an microsoft/winget-pkgs).
   # Erst einschalten, wenn die erste Version dort aufgenommen ist: Variable
   # WINGET_PUBLISH=true und Secret WINGET_TOKEN (klassisches Token mit
