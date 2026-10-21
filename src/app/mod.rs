@@ -70,7 +70,8 @@ enum Tab {
 enum PackageStatus {
     Queued,
     Running,
-    Done(String),
+    /// Mit Hinweis von winget; ohne wird „Erledigt“ in der aktuellen Sprache angezeigt.
+    Done(Option<String>),
     Failed(Failure),
 }
 
@@ -308,28 +309,37 @@ impl WpmApp {
 
         match flags.self_update {
             Some(Ok(())) => {
-                let text = format!(
+                let text = trf!(
                     "WPM wurde auf Version {} aktualisiert.",
+                    "WPM was updated to version {}.",
                     env!("CARGO_PKG_VERSION")
                 );
                 if flags.minimized {
-                    system::notify("WPM aktualisiert", &text);
+                    system::notify(tr!("WPM aktualisiert", "WPM updated"), &text);
                 }
                 app.notice(NoticeKind::Success, text);
             }
             Some(Err(summary)) => {
                 if flags.minimized {
-                    system::notify("Update von WPM fehlgeschlagen", &summary);
+                    system::notify(
+                        tr!("Update von WPM fehlgeschlagen", "WPM update failed"),
+                        &summary,
+                    );
                 }
                 app.notices.push(Notice {
-                    advice: format!(
+                    advice: trf!(
                         "WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) und in einem Terminal \
                          „winget upgrade {}“ ausführen.",
+                        "Quit WPM (right-click the icon in the system tray, “Quit”) and run \
+                         “winget upgrade {}” in a terminal.",
                         self_update::PACKAGE_ID
                     ),
                     ..Notice::new(
                         NoticeKind::Error,
-                        format!("Update von WPM fehlgeschlagen: {summary}"),
+                        trf!(
+                            "Update von WPM fehlgeschlagen: {summary}",
+                            "WPM update failed: {summary}"
+                        ),
                     )
                 });
             }
@@ -338,9 +348,14 @@ impl WpmApp {
         if flags.other_account {
             app.notice(
                 NoticeKind::Error,
-                "WPM läuft nach der Windows-Bestätigung unter einem anderen Benutzerkonto \
-                 (andere Zugangsdaten eingegeben oder Windows-Administratorschutz aktiv). \
-                 Benutzerbezogene Programme und Einstellungen gehören dann zu diesem Konto.",
+                tr!(
+                    "WPM läuft nach der Windows-Bestätigung unter einem anderen Benutzerkonto \
+                     (andere Zugangsdaten eingegeben oder Windows-Administratorschutz aktiv). \
+                     Benutzerbezogene Programme und Einstellungen gehören dann zu diesem Konto.",
+                    "After the UAC prompt, WPM is running under a different user account \
+                     (other credentials were entered or Windows Administrator Protection is active). \
+                     Per-user programs and settings then belong to that account."
+                ),
             );
         }
         app.submit(Request::Version);
@@ -402,7 +417,12 @@ impl WpmApp {
             pin: upgrade.filter(|_| failure.suggest_pin),
             ..Notice::new(
                 NoticeKind::Error,
-                format!("{} fehlgeschlagen: {}", request.label(), failure.summary),
+                trf!(
+                    "{} fehlgeschlagen: {}",
+                    "{} failed: {}",
+                    request.label(),
+                    failure.summary
+                ),
             )
         });
     }
@@ -433,7 +453,10 @@ impl WpmApp {
             Err(e) => {
                 self.notice(
                     NoticeKind::Info,
-                    format!("Kein Neustart mit Administratorrechten: {e}"),
+                    trf!(
+                        "Kein Neustart mit Administratorrechten: {e}",
+                        "Could not restart as administrator: {e}"
+                    ),
                 );
                 false
             }
@@ -516,7 +539,11 @@ impl WpmApp {
             if !missing.is_empty() {
                 self.notice(
                     NoticeKind::Info,
-                    format!("Kein Update mehr gefunden für: {}", missing.join(", ")),
+                    trf!(
+                        "Kein Update mehr gefunden für: {}",
+                        "Update no longer available for: {}",
+                        missing.join(", ")
+                    ),
                 );
             }
             found
@@ -550,8 +577,12 @@ impl WpmApp {
             self.status.remove(&package.id);
             self.notice(
                 NoticeKind::Info,
-                "Das Update von WPM wurde zurückgestellt, weil andere Updates fehlgeschlagen \
-                 sind. Nach dem Prüfen der Meldungen WPM erneut aktualisieren.",
+                tr!(
+                    "Das Update von WPM wurde zurückgestellt, weil andere Updates fehlgeschlagen \
+                     sind. Nach dem Prüfen der Meldungen WPM erneut aktualisieren.",
+                    "The WPM update was postponed because other updates failed. \
+                     After reviewing the messages, update WPM again."
+                ),
             );
             return;
         }
@@ -559,8 +590,12 @@ impl WpmApp {
             self.status.remove(&package.id);
             self.notice(
                 NoticeKind::Info,
-                "Demo-Modus: Hier würde sich WPM beenden, über winget aktualisieren und \
-                 danach von selbst neu starten.",
+                tr!(
+                    "Demo-Modus: Hier würde sich WPM beenden, über winget aktualisieren und \
+                     danach von selbst neu starten.",
+                    "Demo mode: WPM would now quit, update itself via winget and \
+                     then restart automatically."
+                ),
             );
             return;
         }
@@ -577,7 +612,10 @@ impl WpmApp {
                 self.status.remove(&package.id);
                 self.notice(
                     NoticeKind::Error,
-                    "WPM ist systemweit installiert – für das Update sind Administratorrechte nötig.",
+                    tr!(
+                        "WPM ist systemweit installiert – für das Update sind Administratorrechte nötig.",
+                        "WPM is installed system-wide – the update requires administrator rights."
+                    ),
                 );
             }
             return;
@@ -590,8 +628,11 @@ impl WpmApp {
             Ok(()) => {
                 if !self.hidden {
                     system::notify(
-                        "WPM wird aktualisiert",
-                        "WPM startet danach von selbst neu – bitte nicht vorher erneut starten.",
+                        tr!("WPM wird aktualisiert", "Updating WPM"),
+                        tr!(
+                            "WPM startet danach von selbst neu – bitte nicht vorher erneut starten.",
+                            "WPM will restart automatically afterwards – please do not start it again before then."
+                        ),
                     );
                 }
                 self.quit(ctx);
@@ -600,7 +641,10 @@ impl WpmApp {
                 self.status.remove(&package.id);
                 self.notice(
                     NoticeKind::Error,
-                    format!("Update von WPM konnte nicht gestartet werden: {e}"),
+                    trf!(
+                        "Update von WPM konnte nicht gestartet werden: {e}",
+                        "Could not start the WPM update: {e}"
+                    ),
                 );
             }
         }
@@ -611,16 +655,22 @@ impl WpmApp {
             return;
         }
         self.notices.push(Notice {
-            advice: format!(
+            advice: trf!(
                 "„Mit Windows starten“ ausschalten, WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) \
                  und dann in einem Terminal „winget uninstall {}“ ausführen – oder WPM unter \
                  Windows-Einstellungen > Apps deinstallieren.",
+                "Turn off “Start with Windows”, quit WPM (right-click the icon in the system tray, “Quit”) \
+                 and then run “winget uninstall {}” in a terminal – or uninstall WPM under \
+                 Windows Settings > Apps.",
                 self_update::PACKAGE_ID
             ),
             persistent: true,
             ..Notice::new(
                 NoticeKind::Info,
-                "WPM kann sich nicht selbst deinstallieren, solange es läuft.",
+                tr!(
+                    "WPM kann sich nicht selbst deinstallieren, solange es läuft.",
+                    "WPM cannot uninstall itself while it is running."
+                ),
             )
         });
     }
@@ -768,8 +818,8 @@ impl WpmApp {
     ) {
         if let Some(package_id) = request.package_id() {
             let status = match &result {
-                Ok(Response::Done(Some(note))) => Some(PackageStatus::Done(note.clone())),
-                Ok(_) => Some(PackageStatus::Done("Erledigt".into())),
+                Ok(Response::Done(Some(note))) => Some(PackageStatus::Done(Some(note.clone()))),
+                Ok(_) => Some(PackageStatus::Done(None)),
                 // Abgebrochen ist kein Fehler: Zeile wieder normal anzeigen.
                 Err(failure) if failure.cancelled => None,
                 Err(failure) => Some(PackageStatus::Failed(failure.clone())),
@@ -807,7 +857,10 @@ impl WpmApp {
             && let Err(failure) = &result
             && !failure.cancelled
         {
-            system::notify("Update-Suche fehlgeschlagen", &failure.summary);
+            system::notify(
+                tr!("Update-Suche fehlgeschlagen", "Update check failed"),
+                &failure.summary,
+            );
         }
 
         match (request, result) {
@@ -815,7 +868,10 @@ impl WpmApp {
                 if let Some(view) = self.details.as_mut().filter(|v| v.package.id == id) {
                     view.result = Some(result.and_then(|r| match r {
                         Response::Details(details) => Ok(details),
-                        _ => Err(Failure::new("Unerwartete Antwort")),
+                        _ => Err(Failure::new(tr!(
+                            "Unerwartete Antwort",
+                            "Unexpected response"
+                        ))),
                     }));
                 }
             }
@@ -855,7 +911,11 @@ impl WpmApp {
             (Request::Install { package }, Ok(_)) => {
                 self.notice(
                     NoticeKind::Success,
-                    format!("{} wurde installiert.{note}", package.name),
+                    trf!(
+                        "{} wurde installiert.{note}",
+                        "{} was installed.{note}",
+                        package.name
+                    ),
                 );
             }
             (Request::Upgrade { package }, Ok(_)) => {
@@ -868,7 +928,11 @@ impl WpmApp {
                 self.selected.remove(&package.id);
                 self.notice(
                     NoticeKind::Success,
-                    format!("{} wurde aktualisiert.{note}", package.name),
+                    trf!(
+                        "{} wurde aktualisiert.{note}",
+                        "{} was updated.{note}",
+                        package.name
+                    ),
                 );
             }
             (Request::Uninstall { package }, Ok(_)) => {
@@ -877,7 +941,11 @@ impl WpmApp {
                 }
                 self.notice(
                     NoticeKind::Success,
-                    format!("{} wurde deinstalliert.{note}", package.name),
+                    trf!(
+                        "{} wurde deinstalliert.{note}",
+                        "{} was uninstalled.{note}",
+                        package.name
+                    ),
                 );
             }
             (Request::PinAdd { package }, Ok(_)) => {
@@ -888,8 +956,9 @@ impl WpmApp {
                 self.selected.remove(&package.id);
                 self.notice(
                     NoticeKind::Info,
-                    format!(
+                    trf!(
                         "{} ist angeheftet und wird bei „Alle aktualisieren“ übersprungen.",
+                        "{} is pinned and will be skipped by “Update all”.",
                         package.name
                     ),
                 );
@@ -898,26 +967,39 @@ impl WpmApp {
                 if let Some(pins) = &mut self.pins {
                     pins.retain(|p| p.id != id);
                 }
-                self.notice(NoticeKind::Info, format!("Pin für {id} entfernt."));
+                self.notice(
+                    NoticeKind::Info,
+                    trf!("Pin für {id} entfernt.", "Pin removed for {id}."),
+                );
             }
             (Request::PinList, Ok(Response::Pins(pins))) => self.pins = Some(pins),
             (Request::SourceList, Ok(Response::Sources(sources))) => self.sources = Some(sources),
             (Request::SourceUpdate, Ok(_)) => {
-                self.notice(NoticeKind::Success, "Quellen wurden aktualisiert.");
+                self.notice(
+                    NoticeKind::Success,
+                    tr!("Quellen wurden aktualisiert.", "Sources were updated."),
+                );
             }
             (Request::Export { path }, Ok(_)) => {
                 self.notice(
                     NoticeKind::Success,
-                    format!("Paketliste gespeichert: {}", path.display()),
+                    trf!(
+                        "Paketliste gespeichert: {}",
+                        "Package list saved: {}",
+                        path.display()
+                    ),
                 );
             }
             (Request::Import { .. }, Ok(_)) => {
-                self.notice(NoticeKind::Success, "Import abgeschlossen.");
+                self.notice(
+                    NoticeKind::Success,
+                    tr!("Import abgeschlossen.", "Import complete."),
+                );
             }
             (request, Err(failure)) if failure.cancelled => {
                 self.notice(
                     NoticeKind::Info,
-                    format!("{}: abgebrochen", request.label()),
+                    trf!("{}: abgebrochen", "{}: cancelled", request.label()),
                 );
             }
             (request, Err(failure)) => self.notice_failure(&request, &failure),
@@ -940,17 +1022,26 @@ impl WpmApp {
         if !pending.is_empty() {
             let names = pending.join(", ");
             self.notices.push(Notice {
-                details: "winget meldet die Installation als erfolgreich, aktiviert die neue Version \
-                          aber erst, wenn die Anwendung (und ggf. ihr Hintergrunddienst) beendet ist \
-                          oder Windows neu gestartet wurde. Bleibt das Update danach weiter stehen, \
-                          erkennt winget die Version falsch – dann „Anheften“, besonders bei \
-                          Programmen, die sich selbst aktualisieren."
-                    .into(),
+                details: tr!(
+                    "winget meldet die Installation als erfolgreich, aktiviert die neue Version \
+                     aber erst, wenn die Anwendung (und ggf. ihr Hintergrunddienst) beendet ist \
+                     oder Windows neu gestartet wurde. Bleibt das Update danach weiter stehen, \
+                     erkennt winget die Version falsch – dann „Anheften“, besonders bei \
+                     Programmen, die sich selbst aktualisieren.",
+                    "winget reports the installation as successful, but only activates the new version \
+                     once the application (and its background service, if any) has been closed \
+                     or Windows has been restarted. If the update is still listed after that, \
+                     winget detects the version incorrectly – then use “Pin”, especially for \
+                     programs that update themselves."
+                )
+                .into(),
                 ..Notice::new(
                     NoticeKind::Info,
-                    format!(
+                    trf!(
                         "{names}: Update installiert, aber noch nicht aktiv – Anwendung schließen \
-                         oder Windows neu starten."
+                         oder Windows neu starten.",
+                        "{names}: Update installed but not active yet – close the application \
+                         or restart Windows."
                     ),
                 )
             });
@@ -966,7 +1057,10 @@ impl WpmApp {
             if let Err(e) = result {
                 self.notice(
                     NoticeKind::Error,
-                    format!("Autostart konnte nicht geändert werden: {e}"),
+                    trf!(
+                        "Autostart konnte nicht geändert werden: {e}",
+                        "Could not change autostart: {e}"
+                    ),
                 );
             }
         }
@@ -984,7 +1078,10 @@ impl WpmApp {
         if let Err(e) = self.settings.save() {
             self.notice(
                 NoticeKind::Error,
-                format!("Einstellungen konnten nicht gespeichert werden: {e}"),
+                trf!(
+                    "Einstellungen konnten nicht gespeichert werden: {e}",
+                    "Could not save settings: {e}"
+                ),
             );
         }
     }
@@ -992,9 +1089,13 @@ impl WpmApp {
     fn update_window_title(&mut self, ctx: &egui::Context) {
         let count = self.updates.as_ref().map_or(0, |u| u.upgrades.len());
         let title = match count {
-            0 => "WPM – Windows-Paketmanager".to_string(),
-            1 => "WPM – 1 Update verfügbar".to_string(),
-            n => format!("WPM – {n} Updates verfügbar"),
+            0 => tr!(
+                "WPM – Windows-Paketmanager",
+                "WPM – Windows Package Manager"
+            )
+            .to_string(),
+            1 => tr!("WPM – 1 Update verfügbar", "WPM – 1 update available").to_string(),
+            n => trf!("WPM – {n} Updates verfügbar", "WPM – {n} updates available"),
         };
         if title != self.window_title {
             ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
@@ -1013,7 +1114,10 @@ impl WpmApp {
                 Ok(tray) => self.tray = Some(tray),
                 Err(e) => self.notice(
                     NoticeKind::Error,
-                    format!("Symbol im Infobereich konnte nicht angelegt werden: {e}"),
+                    trf!(
+                        "Symbol im Infobereich konnte nicht angelegt werden: {e}",
+                        "Could not create the system tray icon: {e}"
+                    ),
                 ),
             }
         }
@@ -1083,9 +1187,16 @@ impl WpmApp {
         self.leave_elevated = self.elevated;
         if !self.settings.background_hint_shown {
             system::notify(
-                "WPM läuft im Hintergrund weiter",
-                "Ein Klick auf das Symbol im Infobereich (unten rechts) öffnet WPM wieder. \
-                 Beenden: Rechtsklick auf das Symbol → „Beenden“.",
+                tr!(
+                    "WPM läuft im Hintergrund weiter",
+                    "WPM keeps running in the background"
+                ),
+                tr!(
+                    "Ein Klick auf das Symbol im Infobereich (unten rechts) öffnet WPM wieder. \
+                     Beenden: Rechtsklick auf das Symbol → „Beenden“.",
+                    "Click the icon in the system tray (bottom right) to open WPM again. \
+                     To quit, right-click the icon and choose “Quit”."
+                ),
             );
             let before = self.settings.clone();
             self.settings.background_hint_shown = true;
@@ -1104,10 +1215,12 @@ impl WpmApp {
         self.leave_elevated = false;
         if let Err(e) = system::launch_unelevated(&crate::background_args(self.demo)) {
             system::notify(
-                "WPM wurde beendet",
-                &format!(
+                tr!("WPM wurde beendet", "WPM was closed"),
+                &trf!(
                     "Mit Administratorrechten bleibt WPM nicht im Hintergrund, und ein Neustart \
-                     ohne Adminrechte war nicht möglich ({e}). WPM einfach wieder starten."
+                     ohne Adminrechte war nicht möglich ({e}). WPM einfach wieder starten.",
+                    "WPM does not stay in the background with administrator rights, and restarting \
+                     without admin rights was not possible ({e}). Simply start WPM again."
                 ),
             );
         }
@@ -1125,10 +1238,10 @@ impl WpmApp {
                 waiting => format!("{} … (+{waiting})", job.request.label()),
             },
             None => match count {
-                None => "Windows-Paketmanager".to_string(),
-                Some(0) => "Keine Updates verfügbar".to_string(),
-                Some(1) => "1 Update verfügbar".to_string(),
-                Some(n) => format!("{n} Updates verfügbar"),
+                None => tr!("Windows-Paketmanager", "Windows Package Manager").to_string(),
+                Some(0) => tr!("Keine Updates verfügbar", "No updates available").to_string(),
+                Some(1) => tr!("1 Update verfügbar", "1 update available").to_string(),
+                Some(n) => trf!("{n} Updates verfügbar", "{n} updates available"),
             },
         };
         let state = tray::State {
@@ -1160,11 +1273,20 @@ impl WpmApp {
             .collect();
         if failed.is_empty() {
             let done: Vec<&str> = results.iter().map(|(text, _)| text.as_str()).collect();
-            system::notify("WPM: Fertig", &summarize(&done));
+            system::notify(tr!("WPM: Fertig", "WPM: Done"), &summarize(&done));
         } else {
             system::notify(
-                &format!("WPM: {} von {} fehlgeschlagen", failed.len(), results.len()),
-                &format!("{} – Details im WPM-Fenster.", summarize(&failed)),
+                &trf!(
+                    "WPM: {} von {} fehlgeschlagen",
+                    "WPM: {} of {} failed",
+                    failed.len(),
+                    results.len()
+                ),
+                &trf!(
+                    "{} – Details im WPM-Fenster.",
+                    "{} – details in the WPM window.",
+                    summarize(&failed)
+                ),
             );
         }
     }
@@ -1181,10 +1303,16 @@ impl WpmApp {
             ui.add_space(16.0);
             let tabs = [
                 (Tab::Updates, updates_label),
-                (Tab::Installed, "💻 Installiert".to_string()),
-                (Tab::Search, "🔍 Suchen".to_string()),
-                (Tab::Settings, "⚙ Einstellungen".to_string()),
-                (Tab::Log, "📄 Protokoll".to_string()),
+                (
+                    Tab::Installed,
+                    tr!("💻 Installiert", "💻 Installed").to_string(),
+                ),
+                (Tab::Search, tr!("🔍 Suchen", "🔍 Search").to_string()),
+                (
+                    Tab::Settings,
+                    tr!("⚙ Einstellungen", "⚙ Settings").to_string(),
+                ),
+                (Tab::Log, tr!("📄 Protokoll", "📄 Log").to_string()),
             ];
             for (tab, label) in tabs {
                 if ui
@@ -1197,7 +1325,10 @@ impl WpmApp {
             }
             if self.demo {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new("Demo-Modus").color(ui.visuals().warn_fg_color));
+                    ui.label(
+                        RichText::new(tr!("Demo-Modus", "Demo mode"))
+                            .color(ui.visuals().warn_fg_color),
+                    );
                 });
             }
         });
@@ -1265,16 +1396,22 @@ impl WpmApp {
                         // Erst die Knöpfe rechts, dann der Text im verbleibenden Platz,
                         // damit lange Meldungen umbrechen statt die Knöpfe zu überdecken.
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.small_button("✖").on_hover_text("Schließen").clicked() {
+                            if ui
+                                .small_button("✖")
+                                .on_hover_text(tr!("Schließen", "Close"))
+                                .clicked()
+                            {
                                 dismissed = Some(index);
                             }
                             if let Some(package) = &notice.pin
                                 && ui
-                                    .small_button("📌 Anheften")
-                                    .on_hover_text(
+                                    .small_button(tr!("📌 Anheften", "📌 Pin"))
+                                    .on_hover_text(tr!(
                                         "Dieses Update künftig überspringen (winget pin). \
                                          Lässt sich unter „Angeheftete Pakete“ wieder lösen.",
-                                    )
+                                        "Skip this update from now on (winget pin). \
+                                         You can unpin it again under “Pinned packages”."
+                                    ))
                                     .clicked()
                             {
                                 pin = Some(package.clone());
@@ -1282,7 +1419,7 @@ impl WpmApp {
                             }
                             if let Some(path) = notice.log_path.as_ref().filter(|p| p.is_file())
                                 && ui
-                                    .small_button("📄 Protokoll öffnen")
+                                    .small_button(tr!("📄 Protokoll öffnen", "📄 Open log"))
                                     .on_hover_text(path.display().to_string())
                                     .clicked()
                             {
@@ -1290,7 +1427,7 @@ impl WpmApp {
                             }
                             if !notice.details.is_empty() {
                                 let label = if notice.expanded {
-                                    "Details ausblenden"
+                                    tr!("Details ausblenden", "Hide details")
                                 } else {
                                     "Details"
                                 };
@@ -1299,9 +1436,15 @@ impl WpmApp {
                                 }
                             }
                             let admin_label = if notice.retry.is_some() {
-                                "🛡 Mit Adminrechten erneut versuchen"
+                                tr!(
+                                    "🛡 Mit Adminrechten erneut versuchen",
+                                    "🛡 Retry with admin rights"
+                                )
                             } else {
-                                "🛡 Als Administrator neu starten"
+                                tr!(
+                                    "🛡 Als Administrator neu starten",
+                                    "🛡 Restart as administrator"
+                                )
                             };
                             if show_admin
                                 && ui
@@ -1309,15 +1452,19 @@ impl WpmApp {
                                         can_restart,
                                         egui::Button::new(admin_label).small(),
                                     )
-                                    .on_hover_text(
+                                    .on_hover_text(tr!(
                                         "WPM startet nach einer Windows-Bestätigung mit \
                                          Administratorrechten neu – danach laufen alle Installer \
                                          ohne weitere Nachfrage.",
-                                    )
-                                    .on_disabled_hover_text(
+                                        "WPM restarts with administrator rights after a UAC prompt \
+                                         – from then on, all installers run without further prompts."
+                                    ))
+                                    .on_disabled_hover_text(tr!(
                                         "Erst möglich, wenn keine Vorgänge mehr laufen \
                                          (oder nach „Abbrechen“).",
-                                    )
+                                        "Only possible once no operations are running \
+                                         (or after “Cancel”)."
+                                    ))
                                     .clicked()
                             {
                                 restart = Some(notice.retry.iter().map(|p| p.id.clone()).collect());
@@ -1356,7 +1503,10 @@ impl WpmApp {
         {
             self.notice(
                 NoticeKind::Error,
-                format!("Protokoll konnte nicht geöffnet werden: {e}"),
+                trf!(
+                    "Protokoll konnte nicht geöffnet werden: {e}",
+                    "Could not open the log: {e}"
+                ),
             );
         }
     }
@@ -1369,15 +1519,23 @@ impl WpmApp {
                 ui.label(job.request.label());
                 let waiting = self.queue.len() - 1;
                 if waiting > 0 {
-                    ui.label(RichText::new(format!("(+{waiting} in Warteschlange)")).weak());
+                    ui.label(
+                        RichText::new(trf!(
+                            "(+{waiting} in Warteschlange)",
+                            "(+{waiting} in queue)"
+                        ))
+                        .weak(),
+                    );
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .button("⏹ Abbrechen")
-                        .on_hover_text(
+                        .button(tr!("⏹ Abbrechen", "⏹ Cancel"))
+                        .on_hover_text(tr!(
                             "Laufenden Vorgang abbrechen (auch einen hängenden Installer) \
                              und Warteschlange leeren",
-                        )
+                            "Cancel the running operation (including a stuck installer) \
+                             and clear the queue"
+                        ))
                         .clicked()
                     {
                         self.worker.cancel_all();
@@ -1407,22 +1565,28 @@ impl WpmApp {
                         // eigenen Fenster auf eine Eingabe.
                         ui.add(
                             egui::Label::new(
-                                RichText::new(format!(
+                                RichText::new(trf!(
                                     "⚠ Seit {} Min. keine Rückmeldung – wartet der Installer?",
+                                    "⚠ No response for {} min – is the installer waiting?",
                                     silence.as_secs() / 60
                                 ))
                                 .color(ui.visuals().warn_fg_color),
                             )
                             .truncate(),
                         )
-                        .on_hover_text(
+                        .on_hover_text(tr!(
                             "Große Installer brauchen manchmal lange. Manche öffnen aber trotz \
                              „Still“ ein eigenes (Konsolen-)Fenster und warten dort auf eine \
                              Eingabe – z. B. rustup-init, wenn Rust-Programme wie cargo oder \
                              rust-analyzer noch laufen. Fenster in der Taskleiste prüfen, das \
                              betroffene Programm schließen oder „Abbrechen“ (beendet auch den \
                              Installer).",
-                        );
+                            "Large installers sometimes take a long time. But some open their own \
+                             (console) window despite “Silent” mode and wait there for input – \
+                             e.g. rustup-init when Rust programs such as cargo or rust-analyzer \
+                             are still running. Check the windows in the taskbar, close the \
+                             affected program or click “Cancel” (this also ends the installer)."
+                        ));
                     } else {
                         let detail = if fraction.is_some() {
                             self.progress.replace(['█', '▒'], "").trim().to_string()
@@ -1433,19 +1597,27 @@ impl WpmApp {
                     }
                 });
             } else {
-                ui.label("Bereit");
+                ui.label(tr!("Bereit", "Ready"));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if self.elevated {
                         ui.label(RichText::new("🛡 Administrator").weak())
-                            .on_hover_text("WPM läuft mit Administratorrechten.");
+                            .on_hover_text(tr!(
+                                "WPM läuft mit Administratorrechten.",
+                                "WPM is running with administrator rights."
+                            ));
                     } else if self.can_restart_elevated()
                         && ui
-                            .small_button("🛡 Als Administrator neu starten")
-                            .on_hover_text(
+                            .small_button(tr!(
+                                "🛡 Als Administrator neu starten",
+                                "🛡 Restart as administrator"
+                            ))
+                            .on_hover_text(tr!(
                                 "WPM startet nach einer Windows-Bestätigung mit \
                                  Administratorrechten neu – danach laufen alle Installer \
                                  ohne weitere Nachfrage.",
-                            )
+                                "WPM restarts with administrator rights after a UAC prompt \
+                                 – from then on, all installers run without further prompts."
+                            ))
                             .clicked()
                     {
                         let ctx = ui.ctx().clone();
@@ -1456,7 +1628,7 @@ impl WpmApp {
                             ui.label(RichText::new(format!("winget {version}")).weak())
                         }
                         Some(Err(_)) => ui.label(
-                            RichText::new("winget nicht verfügbar")
+                            RichText::new(tr!("winget nicht verfügbar", "winget not available"))
                                 .color(ui.visuals().error_fg_color),
                         ),
                         None => ui.label(""),
@@ -1559,10 +1731,14 @@ fn background_result_text(
         {
             request.label()
         }
-        Request::Install { package } => format!("{} installiert", package.name),
-        Request::Upgrade { package } => format!("{} aktualisiert", package.name),
-        Request::Uninstall { package } => format!("{} deinstalliert", package.name),
-        Request::Import { .. } => "Import abgeschlossen".to_string(),
+        Request::Install { package } => {
+            trf!("{} installiert", "{} installed", package.name)
+        }
+        Request::Upgrade { package } => trf!("{} aktualisiert", "{} updated", package.name),
+        Request::Uninstall { package } => {
+            trf!("{} deinstalliert", "{} uninstalled", package.name)
+        }
+        Request::Import { .. } => tr!("Import abgeschlossen", "Import complete").to_string(),
         _ => return None,
     };
     Some((text, ok))
@@ -1573,9 +1749,18 @@ fn background_result_text(
 fn announce_updates(list: &UpgradeList) {
     let names: Vec<&str> = list.upgrades.iter().map(|p| p.name.as_str()).collect();
     match names.len() {
-        0 => system::notify("Keine Updates verfügbar", "Alle Pakete sind aktuell."),
-        1 => system::notify("1 Update verfügbar", &summarize(&names)),
-        n => system::notify(&format!("{n} Updates verfügbar"), &summarize(&names)),
+        0 => system::notify(
+            tr!("Keine Updates verfügbar", "No updates available"),
+            tr!("Alle Pakete sind aktuell.", "All packages are up to date."),
+        ),
+        1 => system::notify(
+            tr!("1 Update verfügbar", "1 update available"),
+            &summarize(&names),
+        ),
+        n => system::notify(
+            &trf!("{n} Updates verfügbar", "{n} updates available"),
+            &summarize(&names),
+        ),
     }
 }
 
@@ -1614,4 +1799,31 @@ fn setup_style(ctx: &egui::Context) {
         style.spacing.item_spacing = egui::vec2(8.0, 6.0);
         style.spacing.button_padding = egui::vec2(8.0, 3.0);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::Lang;
+
+    #[test]
+    fn background_result_text_in_both_languages() {
+        let request = Request::Upgrade {
+            package: Package {
+                name: "Firefox".into(),
+                ..Package::default()
+            },
+        };
+        let ok: Result<Response, Failure> = Ok(Response::Done(None));
+        assert_eq!(
+            background_result_text(&request, &ok),
+            Some(("Firefox aktualisiert".to_string(), true))
+        );
+        i18n::with(Lang::En, || {
+            assert_eq!(
+                background_result_text(&request, &ok),
+                Some(("Firefox updated".to_string(), true))
+            );
+        });
+    }
 }

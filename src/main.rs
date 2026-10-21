@@ -65,14 +65,19 @@ fn main() -> eframe::Result {
                 // Nach einem Selbst-Update läuft WPM schon wieder (erneut
                 // gestartet): Die laufende Instanz erfährt das Ergebnis nicht.
                 if let Some(Err(summary)) = &self_update {
-                    let text = format!(
+                    let text = trf!(
                         "Update von WPM fehlgeschlagen: {summary}\nWPM lief währenddessen \
                          erneut. WPM beenden und „winget upgrade {}“ ausführen oder das \
                          Update erneut starten.",
+                        "WPM update failed: {summary}\nWPM was started again in the meantime. \
+                         Quit WPM and run “winget upgrade {}” or start the update again.",
                         self_update::PACKAGE_ID
                     );
                     if background {
-                        system::notify("Update von WPM fehlgeschlagen", &text);
+                        system::notify(
+                            tr!("Update von WPM fehlgeschlagen", "WPM update failed"),
+                            &text,
+                        );
                     } else {
                         system::message_box("WPM", &text);
                     }
@@ -82,8 +87,12 @@ fn main() -> eframe::Result {
                 if !autostart && !background && !system::signal_running_instance() {
                     system::message_box(
                         "WPM",
-                        "WPM läuft bereits – das Fenster ist eventuell in der Taskleiste \
-                         minimiert oder im Infobereich (unten rechts neben der Uhr).",
+                        tr!(
+                            "WPM läuft bereits – das Fenster ist eventuell in der Taskleiste \
+                             minimiert oder im Infobereich (unten rechts neben der Uhr).",
+                            "WPM is already running – the window may be minimized to the \
+                             taskbar or in the system tray (bottom right, next to the clock).",
+                        ),
                     );
                 }
                 return Ok(());

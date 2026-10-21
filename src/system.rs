@@ -251,7 +251,10 @@ mod imp {
             if shell.is_null() {
                 return Err(io::Error::new(
                     io::ErrorKind::NotFound,
-                    "Die Windows-Shell (Explorer) läuft nicht",
+                    tr!(
+                        "Die Windows-Shell (Explorer) läuft nicht",
+                        "The Windows shell (Explorer) is not running"
+                    ),
                 ));
             }
             let mut pid = 0u32;
@@ -543,7 +546,10 @@ mod imp {
     use std::time::Duration;
 
     fn unsupported() -> io::Error {
-        io::Error::new(io::ErrorKind::Unsupported, "nur unter Windows verfügbar")
+        io::Error::new(
+            io::ErrorKind::Unsupported,
+            tr!("nur unter Windows verfügbar", "only available on Windows"),
+        )
     }
 
     pub fn is_elevated() -> bool {
@@ -592,7 +598,13 @@ mod imp {
     }
 
     pub fn notify(title: &str, body: &str) {
-        eprintln!("[Benachrichtigung] {title}: {body}");
+        eprintln!(
+            "{}",
+            trf!(
+                "[Benachrichtigung] {title}: {body}",
+                "[Notification] {title}: {body}"
+            )
+        );
     }
 
     pub fn run_entry_exists() -> bool {
@@ -744,7 +756,7 @@ pub fn open_log_file(path: &std::path::Path) -> io::Result<()> {
     if !is_log || !path.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
-            "Protokolldatei nicht gefunden",
+            tr!("Protokolldatei nicht gefunden", "Log file not found"),
         ));
     }
     imp::open_file(path)

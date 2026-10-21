@@ -37,17 +37,17 @@ pub fn cell(ui: &mut Ui, text: impl Into<egui::WidgetText>) {
 pub fn status(ui: &mut Ui, status: Option<&PackageStatus>) -> bool {
     match status {
         Some(PackageStatus::Queued) => {
-            ui.label(RichText::new("⏳ wartet …").weak());
+            ui.label(RichText::new(tr!("⏳ wartet …", "⏳ waiting …")).weak());
             false
         }
         Some(PackageStatus::Running) => {
             ui.spinner();
-            ui.label("läuft …");
+            ui.label(tr!("läuft …", "running …"));
             false
         }
         Some(PackageStatus::Done(message)) => {
             ui.label(RichText::new("✔").color(GREEN).strong())
-                .on_hover_text(message);
+                .on_hover_text(message.as_deref().unwrap_or(tr!("Erledigt", "Done")));
             true
         }
         Some(PackageStatus::Failed(failure)) => {
@@ -56,12 +56,14 @@ pub fn status(ui: &mut Ui, status: Option<&PackageStatus>) -> bool {
                 && crate::system::ELEVATION_SUPPORTED
                 && !crate::system::is_elevated()
             {
-                text.push_str(
+                text.push_str(tr!(
                     "\n\nTipp: Mit Administratorrechten (siehe Einstellungen) entfallen \
                      die Windows-Bestätigungen.",
-                );
+                    "\n\nTip: With administrator rights (see Settings), you won't get \
+                     UAC prompts."
+                ));
             }
-            ui.label(RichText::new("✖ Fehler").color(ui.visuals().error_fg_color))
+            ui.label(RichText::new(tr!("✖ Fehler", "✖ Failed")).color(ui.visuals().error_fg_color))
                 .on_hover_text(text);
             true
         }
@@ -84,9 +86,9 @@ pub fn message(ui: &mut Ui, text: &str, loading: bool) {
 pub fn ago(time: Instant) -> String {
     let seconds = time.elapsed().as_secs();
     match seconds {
-        0..60 => "gerade eben".into(),
-        60..3600 => format!("vor {} Min.", seconds / 60),
-        _ => format!("vor {} Std.", seconds / 3600),
+        0..60 => tr!("gerade eben", "just now").into(),
+        60..3600 => trf!("vor {} Min.", "{} min ago", seconds / 60),
+        _ => trf!("vor {} Std.", "{} h ago", seconds / 3600),
     }
 }
 
@@ -132,4 +134,28 @@ pub fn progress_bar(ui: &mut Ui, fraction: Option<f32>, width: f32) {
 pub fn elapsed(since: Instant) -> String {
     let seconds = since.elapsed().as_secs();
     format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::*;
+    use crate::i18n::{self, Lang};
+
+    #[test]
+    fn ago_in_both_languages() {
+        let now = Instant::now();
+        assert_eq!(ago(now), "gerade eben");
+        i18n::with(Lang::En, || assert_eq!(ago(now), "just now"));
+        // Kurz nach dem Systemstart lässt sich kein früherer Zeitpunkt bilden.
+        if let Some(earlier) = now.checked_sub(Duration::from_secs(150)) {
+            assert_eq!(ago(earlier), "vor 2 Min.");
+            i18n::with(Lang::En, || assert_eq!(ago(earlier), "2 min ago"));
+        }
+        if let Some(earlier) = now.checked_sub(Duration::from_secs(2 * 3600 + 5)) {
+            assert_eq!(ago(earlier), "vor 2 Std.");
+            i18n::with(Lang::En, || assert_eq!(ago(earlier), "2 h ago"));
+        }
+    }
 }

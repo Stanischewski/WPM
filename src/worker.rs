@@ -164,11 +164,18 @@ fn execute(
         })
         .map_err(|e| {
             Failure::new(if e.kind() == std::io::ErrorKind::NotFound {
-                "winget wurde nicht gefunden. Bitte den „App-Installer“ aus dem Microsoft Store \
-                 installieren oder aktualisieren."
-                    .to_string()
+                tr!(
+                    "winget wurde nicht gefunden. Bitte den „App-Installer“ aus dem Microsoft Store \
+                     installieren oder aktualisieren.",
+                    "winget was not found. Please install or update “App Installer” from the \
+                     Microsoft Store."
+                )
+                .to_string()
             } else {
-                format!("winget konnte nicht gestartet werden: {e}")
+                trf!(
+                    "winget konnte nicht gestartet werden: {e}",
+                    "Could not start winget: {e}"
+                )
             })
         })?;
     if output.exit_code.is_none() {
@@ -191,8 +198,8 @@ fn notify_new_updates(list: &UpgradeList, notified: &mut HashSet<(String, String
         .collect();
     if notify && !new.is_empty() {
         let title = match list.upgrades.len() {
-            1 => "1 Update verfügbar".to_string(),
-            n => format!("{n} Updates verfügbar"),
+            1 => tr!("1 Update verfügbar", "1 update available").to_string(),
+            n => trf!("{n} Updates verfügbar", "{n} updates available"),
         };
         let mut names: Vec<&str> = new.iter().take(4).map(|p| p.name.as_str()).collect();
         if new.len() > names.len() {

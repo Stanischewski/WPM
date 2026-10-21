@@ -22,22 +22,36 @@ impl WpmApp {
 
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!checking, egui::Button::new("🔄 Nach Updates suchen"))
+                .add_enabled(
+                    !checking,
+                    egui::Button::new(tr!("🔄 Nach Updates suchen", "🔄 Check for updates")),
+                )
                 .clicked()
             {
                 actions.push(Action::CheckUpdates);
             }
-            let label = format!("⬆ Auswahl aktualisieren ({})", selected.len());
+            let label = trf!(
+                "⬆ Auswahl aktualisieren ({})",
+                "⬆ Update selected ({})",
+                selected.len()
+            );
             if ui
                 .add_enabled(!selected.is_empty(), egui::Button::new(label))
                 .clicked()
             {
                 actions.extend(selected.iter().map(|p| Action::Upgrade((*p).clone())));
             }
-            let label = format!("⏫ Alle aktualisieren ({})", upgrades.len());
+            let label = trf!(
+                "⏫ Alle aktualisieren ({})",
+                "⏫ Update all ({})",
+                upgrades.len()
+            );
             if ui
                 .add_enabled(!upgrades.is_empty(), egui::Button::new(label))
-                .on_hover_text("Angeheftete Pakete werden übersprungen.")
+                .on_hover_text(tr!(
+                    "Angeheftete Pakete werden übersprungen.",
+                    "Pinned packages are skipped."
+                ))
                 .clicked()
             {
                 actions.extend(upgrades.iter().cloned().map(Action::Upgrade));
@@ -45,7 +59,12 @@ impl WpmApp {
             if let Some(checked) = self.updates_checked_at {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(
-                        RichText::new(format!("Zuletzt geprüft: {}", widgets::ago(checked))).weak(),
+                        RichText::new(trf!(
+                            "Zuletzt geprüft: {}",
+                            "Last checked: {}",
+                            widgets::ago(checked)
+                        ))
+                        .weak(),
                     );
                     ui.ctx().request_repaint_after(Duration::from_secs(30));
                 });
@@ -56,14 +75,24 @@ impl WpmApp {
         match &self.updates {
             None => {
                 let text = if checking {
-                    "Suche nach Updates …"
+                    tr!("Suche nach Updates …", "Checking for updates …")
                 } else {
-                    "Noch nicht nach Updates gesucht."
+                    tr!(
+                        "Noch nicht nach Updates gesucht.",
+                        "Not checked for updates yet."
+                    )
                 };
                 widgets::message(ui, text, checking);
             }
             Some(list) if list.upgrades.is_empty() && list.pinned.is_empty() => {
-                widgets::message(ui, "✔ Alle Pakete sind auf dem neuesten Stand.", false);
+                widgets::message(
+                    ui,
+                    tr!(
+                        "✔ Alle Pakete sind auf dem neuesten Stand.",
+                        "✔ All packages are up to date."
+                    ),
+                    false,
+                );
             }
             Some(list) => {
                 egui::ScrollArea::vertical()
@@ -71,17 +100,18 @@ impl WpmApp {
                     .auto_shrink(false)
                     .show(ui, |ui| {
                     if list.upgrades.is_empty() {
-                        ui.label(RichText::new("Keine Updates außer für angeheftete Pakete.").weak());
+                        ui.label(RichText::new(tr!("Keine Updates außer für angeheftete Pakete.", "No updates except for pinned packages.")).weak());
                     } else {
                         upgrades_table(ui, &list.upgrades, &mut self.selected, &self.status, &mut actions);
                     }
                     if !list.pinned.is_empty() {
                         ui.add_space(16.0);
-                        ui.label(RichText::new("📌 Angeheftete Pakete").heading());
+                        ui.label(RichText::new(tr!("📌 Angeheftete Pakete", "📌 Pinned packages")).heading());
                         ui.label(
-                            RichText::new(
+                            RichText::new(tr!(
                                 "Für diese Pakete gibt es Updates, sie werden aber nur auf ausdrücklichen Wunsch installiert.",
-                            )
+                                "Updates are available for these packages, but they are only installed on explicit request.",
+                            ))
                             .weak(),
                         );
                         pinned_table(ui, &list.pinned, &self.status, &mut actions);
@@ -117,7 +147,7 @@ fn upgrades_table(
                 let mut all = upgrades.iter().all(|p| selected.contains(&p.id));
                 if ui
                     .checkbox(&mut all, "")
-                    .on_hover_text("Alle auswählen")
+                    .on_hover_text(tr!("Alle auswählen", "Select all"))
                     .changed()
                 {
                     if all {
@@ -132,10 +162,10 @@ fn upgrades_table(
                 &[
                     "Name",
                     "ID",
-                    "Installiert",
-                    "Verfügbar",
-                    "Quelle",
-                    "Aktionen",
+                    tr!("Installiert", "Installed"),
+                    tr!("Verfügbar", "Available"),
+                    tr!("Quelle", "Source"),
+                    tr!("Aktionen", "Actions"),
                 ],
             );
         })
@@ -159,19 +189,24 @@ fn upgrades_table(
                 row.col(|ui| widgets::cell(ui, &package.source));
                 row.col(|ui| {
                     if widgets::status(ui, status.get(&package.id)) {
-                        let mut button = ui.button("⬆ Aktualisieren");
+                        let mut button = ui.button(tr!("⬆ Aktualisieren", "⬆ Update"));
                         if crate::self_update::is_self(package) {
-                            button = button.on_hover_text(
+                            button = button.on_hover_text(tr!(
                                 "WPM beendet sich dafür kurz und startet danach von selbst neu \
                                  (nach allen anderen Updates).",
-                            );
+                                "WPM briefly closes for this and then restarts automatically \
+                                 (after all other updates).",
+                            ));
                         }
                         if button.clicked() {
                             actions.push(Action::Upgrade(package.clone()));
                         }
                         if ui
                             .button("📌")
-                            .on_hover_text("Anheften: Update ignorieren (winget pin)")
+                            .on_hover_text(tr!(
+                                "Anheften: Update ignorieren (winget pin)",
+                                "Pin: ignore update (winget pin)"
+                            ))
                             .clicked()
                         {
                             actions.push(Action::Pin(package.clone()));
@@ -205,10 +240,10 @@ fn pinned_table(
                 &[
                     "Name",
                     "ID",
-                    "Installiert",
-                    "Verfügbar",
-                    "Quelle",
-                    "Aktionen",
+                    tr!("Installiert", "Installed"),
+                    tr!("Verfügbar", "Available"),
+                    tr!("Quelle", "Source"),
+                    tr!("Aktionen", "Actions"),
                 ],
             );
         })
@@ -222,10 +257,17 @@ fn pinned_table(
                 row.col(|ui| widgets::cell(ui, &package.source));
                 row.col(|ui| {
                     if widgets::status(ui, status.get(&package.id)) {
-                        if ui.button("⬆ Trotzdem aktualisieren").clicked() {
+                        if ui
+                            .button(tr!("⬆ Trotzdem aktualisieren", "⬆ Update anyway"))
+                            .clicked()
+                        {
                             actions.push(Action::Upgrade(package.clone()));
                         }
-                        if ui.button("Lösen").on_hover_text("Pin entfernen").clicked() {
+                        if ui
+                            .button(tr!("Lösen", "Unpin"))
+                            .on_hover_text(tr!("Pin entfernen", "Remove pin"))
+                            .clicked()
+                        {
                             actions.push(Action::Unpin(package.id.clone()));
                         }
                     }

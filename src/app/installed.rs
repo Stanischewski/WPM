@@ -32,16 +32,18 @@ impl WpmApp {
         ui.horizontal(|ui| {
             ui.add(
                 egui::TextEdit::singleline(&mut self.installed_filter)
-                    .hint_text("🔍 Nach Name oder ID filtern …")
+                    .hint_text(tr!("🔍 Nach Name oder ID filtern …", "🔍 Filter by name or ID …"))
                     .desired_width(260.0),
             );
-            ui.checkbox(&mut self.settings.hide_unmanaged, "Nur Pakete aus Quellen")
-                .on_hover_text(
+            ui.checkbox(&mut self.settings.hide_unmanaged, tr!("Nur Pakete aus Quellen", "Only packages with a source"))
+                .on_hover_text(tr!(
                     "Programme ausblenden, die winget nur lokal erkannt hat \
                      (z. B. Treiber, Systemkomponenten). Diese lassen sich nicht über winget aktualisieren.",
-                );
+                    "Hide programs that winget only detected locally \
+                     (e.g. drivers, system components). These can't be updated through winget.",
+                ));
             if ui
-                .add_enabled(!loading, egui::Button::new("🔄 Neu laden"))
+                .add_enabled(!loading, egui::Button::new(tr!("🔄 Neu laden", "🔄 Reload")))
                 .clicked()
             {
                 actions.push(Action::LoadInstalled);
@@ -51,16 +53,24 @@ impl WpmApp {
             }
             if let Some(all) = &self.installed {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(RichText::new(format!("{} von {} Paketen", visible.len(), all.len())).weak());
+                    ui.label(RichText::new(trf!("{} von {} Paketen", "{} of {} packages", visible.len(), all.len())).weak());
                 });
             }
         });
         ui.separator();
 
         if self.installed.is_none() {
-            widgets::message(ui, "Lade installierte Pakete …", true);
+            widgets::message(
+                ui,
+                tr!("Lade installierte Pakete …", "Loading installed packages …"),
+                true,
+            );
         } else if visible.is_empty() {
-            widgets::message(ui, "Keine passenden Pakete.", false);
+            widgets::message(
+                ui,
+                tr!("Keine passenden Pakete.", "No matching packages."),
+                false,
+            );
         } else {
             let status = &self.status;
             widgets::table(ui, "installed")
@@ -73,7 +83,14 @@ impl WpmApp {
                 .header(HEADER_HEIGHT, |mut header| {
                     widgets::header(
                         &mut header,
-                        &["Name", "ID", "Version", "Verfügbar", "Quelle", "Aktionen"],
+                        &[
+                            "Name",
+                            "ID",
+                            "Version",
+                            tr!("Verfügbar", "Available"),
+                            tr!("Quelle", "Source"),
+                            tr!("Aktionen", "Actions"),
+                        ],
                     );
                 })
                 .body(|body| {
@@ -88,7 +105,9 @@ impl WpmApp {
                             if !widgets::status(ui, status.get(&package.id)) {
                                 return;
                             }
-                            if package.has_update() && ui.button("⬆ Aktualisieren").clicked() {
+                            if package.has_update()
+                                && ui.button(tr!("⬆ Aktualisieren", "⬆ Update")).clicked()
+                            {
                                 actions.push(Action::Upgrade(package.clone()));
                             }
                             if package.has_source()
@@ -96,7 +115,11 @@ impl WpmApp {
                             {
                                 actions.push(Action::ShowDetails(package.clone()));
                             }
-                            if ui.button("🗑").on_hover_text("Deinstallieren").clicked() {
+                            if ui
+                                .button("🗑")
+                                .on_hover_text(tr!("Deinstallieren", "Uninstall"))
+                                .clicked()
+                            {
                                 actions.push(Action::Uninstall(package.clone()));
                             }
                         });

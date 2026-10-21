@@ -24,7 +24,7 @@ impl WpmApp {
                     None => {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Lade Details …");
+                            ui.label(tr!("Lade Details …", "Loading details …"));
                         });
                     }
                     Some(Err(failure)) => {
@@ -61,12 +61,18 @@ impl WpmApp {
                 ui.horizontal(|ui| {
                     if package.has_update()
                         && ui
-                            .button(format!("⬆ Auf {} aktualisieren", package.available))
+                            .button(trf!(
+                                "⬆ Auf {} aktualisieren",
+                                "⬆ Update to {}",
+                                package.available
+                            ))
                             .clicked()
                     {
                         action = Some(Action::Upgrade(package.clone()));
                     }
-                    if !installed && !package.has_update() && ui.button("⬇ Installieren").clicked()
+                    if !installed
+                        && !package.has_update()
+                        && ui.button(tr!("⬇ Installieren", "⬇ Install")).clicked()
                     {
                         action = Some(Action::Install(package.clone()));
                     }
@@ -88,19 +94,20 @@ impl WpmApp {
         let mut confirmed = None;
         let modal = egui::Modal::new(egui::Id::new("confirm_uninstall")).show(ctx, |ui| {
             ui.set_width(400.0);
-            ui.heading("Deinstallieren?");
+            ui.heading(tr!("Deinstallieren?", "Uninstall?"));
             ui.add_space(4.0);
-            ui.label(format!(
+            ui.label(trf!(
                 "Soll „{}“ wirklich deinstalliert werden?",
+                "Do you really want to uninstall “{}”?",
                 package.name
             ));
             ui.label(RichText::new(&package.id).monospace().weak());
             ui.add_space(12.0);
             ui.horizontal(|ui| {
-                if ui.button("🗑 Deinstallieren").clicked() {
+                if ui.button(tr!("🗑 Deinstallieren", "🗑 Uninstall")).clicked() {
                     confirmed = Some(true);
                 }
-                if ui.button("Abbrechen").clicked() {
+                if ui.button(tr!("Abbrechen", "Cancel")).clicked() {
                     confirmed = Some(false);
                 }
             });

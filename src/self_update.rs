@@ -122,7 +122,12 @@ fn run_helper(pid: u32, target: &Path, hidden: bool) {
     };
     let result = WingetRunner::default()
         .run(&request.args(&options), &mut |_| {})
-        .map_err(|e| format!("winget konnte nicht gestartet werden: {e}"))
+        .map_err(|e| {
+            trf!(
+                "winget konnte nicht gestartet werden: {e}",
+                "Could not start winget: {e}"
+            )
+        })
         .and_then(|output| {
             request
                 .interpret(&output)
@@ -143,9 +148,11 @@ fn run_helper(pid: u32, target: &Path, hidden: bool) {
     if !started {
         system::message_box(
             "WPM",
-            &format!(
+            &trf!(
                 "WPM konnte nach dem Update nicht neu gestartet werden ({}). Bitte WPM \
                  von Hand starten (z. B. mit Win+R → wpm).",
+                "WPM could not be restarted after the update ({}). Please start WPM \
+                 manually (e.g. press Win+R and enter wpm).",
                 target.display()
             ),
         );

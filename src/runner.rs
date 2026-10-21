@@ -121,7 +121,9 @@ impl Runner for WingetRunner {
         let running = self.running.lock().unwrap().take();
         let status = match running {
             Some(mut running) => running.child.wait()?,
-            None => return Err(io::Error::other("Prozess verloren")),
+            None => {
+                return Err(io::Error::other(tr!("Prozess verloren", "Process lost")));
+            }
         };
         read_result?;
 
@@ -228,7 +230,12 @@ fn winget_program() -> io::Result<std::path::PathBuf> {
         .filter(|dir| dir.is_absolute() && !excluded.contains(&normalize(dir)))
         .map(|dir| dir.join("winget.exe"))
         .find(|candidate| exists(candidate))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "winget.exe nicht gefunden"))
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                tr!("winget.exe nicht gefunden", "winget.exe not found"),
+            )
+        })
 }
 
 #[cfg(not(windows))]

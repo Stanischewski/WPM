@@ -57,7 +57,7 @@ impl WpmApp {
             return;
         }
         let mut open = true;
-        egui::Window::new("Lizenzen")
+        egui::Window::new(tr!("Lizenzen", "Licenses"))
             .id(egui::Id::new("licenses_window"))
             .open(&mut open)
             .collapsible(false)
@@ -65,11 +65,14 @@ impl WpmApp {
             .default_height(520.0)
             .show(ctx, |ui| {
                 ui.add(
-                    egui::Label::new(
+                    egui::Label::new(tr!(
                         "WPM steht unter der MIT-Lizenz und enthält Open-Source-Bibliotheken \
                          anderer Autorinnen und Autoren. Hier stehen alle Lizenzhinweise, wie es \
                          deren Lizenzen verlangen.",
-                    )
+                        "WPM is licensed under the MIT License and includes open-source libraries \
+                         by other authors. All license notices are listed here, as their licenses \
+                         require."
+                    ))
                     .wrap(),
                 );
                 ui.separator();

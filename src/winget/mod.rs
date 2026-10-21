@@ -224,21 +224,27 @@ impl Request {
     /// Kurze Beschreibung für Statuszeile und Warteschlange.
     pub fn label(&self) -> String {
         match self {
-            Request::Version => "winget-Version abfragen".into(),
-            Request::ListInstalled => "Installierte Pakete laden".into(),
-            Request::CheckUpdates { .. } => "Nach Updates suchen".into(),
-            Request::Search { query, .. } => format!("Suche nach „{query}“"),
-            Request::Show { id, .. } => format!("Details zu {id} laden"),
-            Request::Install { package } => format!("{} installieren", package.name),
-            Request::Upgrade { package } => format!("{} aktualisieren", package.name),
-            Request::Uninstall { package } => format!("{} deinstallieren", package.name),
-            Request::PinAdd { package } => format!("{} anheften", package.name),
-            Request::PinRemove { id } => format!("{id} lösen"),
-            Request::PinList => "Angeheftete Pakete laden".into(),
-            Request::SourceList => "Quellen laden".into(),
-            Request::SourceUpdate => "Quellen aktualisieren".into(),
-            Request::Export { .. } => "Paketliste exportieren".into(),
-            Request::Import { .. } => "Paketliste importieren".into(),
+            Request::Version => tr!("winget-Version abfragen", "Get winget version").into(),
+            Request::ListInstalled => {
+                tr!("Installierte Pakete laden", "Load installed packages").into()
+            }
+            Request::CheckUpdates { .. } => tr!("Nach Updates suchen", "Check for updates").into(),
+            Request::Search { query, .. } => trf!("Suche nach „{query}“", "Search for “{query}”"),
+            Request::Show { id, .. } => trf!("Details zu {id} laden", "Load details for {id}"),
+            Request::Install { package } => {
+                trf!("{} installieren", "Install {}", package.name)
+            }
+            Request::Upgrade { package } => trf!("{} aktualisieren", "Update {}", package.name),
+            Request::Uninstall { package } => {
+                trf!("{} deinstallieren", "Uninstall {}", package.name)
+            }
+            Request::PinAdd { package } => trf!("{} anheften", "Pin {}", package.name),
+            Request::PinRemove { id } => trf!("{id} lösen", "Unpin {id}"),
+            Request::PinList => tr!("Angeheftete Pakete laden", "Load pinned packages").into(),
+            Request::SourceList => tr!("Quellen laden", "Load sources").into(),
+            Request::SourceUpdate => tr!("Quellen aktualisieren", "Update sources").into(),
+            Request::Export { .. } => tr!("Paketliste exportieren", "Export package list").into(),
+            Request::Import { .. } => tr!("Paketliste importieren", "Import package list").into(),
         }
     }
 
@@ -303,7 +309,11 @@ impl Request {
             _ => match out.code() {
                 Some(0) => Ok(Response::Done(None)),
                 Some(REBOOT_REQUIRED_TO_FINISH | REBOOT_INITIATED) => Ok(Response::Done(Some(
-                    "Ein Neustart ist nötig, um den Vorgang abzuschließen.".into(),
+                    tr!(
+                        "Ein Neustart ist nötig, um den Vorgang abzuschließen.",
+                        "A restart is required to complete the operation."
+                    )
+                    .into(),
                 ))),
                 _ => Err(Failure::from_output(out)),
             },
@@ -399,7 +409,7 @@ impl Failure {
     pub fn cancelled() -> Self {
         Self {
             cancelled: true,
-            ..Self::new("Abgebrochen")
+            ..Self::new(tr!("Abgebrochen", "Cancelled"))
         }
     }
 
@@ -425,15 +435,25 @@ impl Failure {
                     None => line.to_string(),
                 })
             })
-            .unwrap_or_else(|| "winget wurde unerwartet beendet.".into());
+            .unwrap_or_else(|| {
+                tr!(
+                    "winget wurde unerwartet beendet.",
+                    "winget exited unexpectedly."
+                )
+                .into()
+            });
         let advice = match code {
-            Some(UPDATE_NOT_APPLICABLE) => Some(
+            Some(UPDATE_NOT_APPLICABLE) => Some(tr!(
                 "winget kennt eine neuere Version, deren Installer aber nicht zu dieser \
                  Installation passt (andere Installationsart, anderer Bereich oder andere \
                  Architektur) – oder das Programm ist inzwischen schon aktuell. Abhilfe: Paket \
                  deinstallieren und über „Suchen“ neu installieren, oder anheften, wenn es sich \
                  selbst aktualisiert.",
-            ),
+                "winget knows a newer version, but its installer does not match this \
+                 installation (different installer type, scope or architecture) – or the \
+                 program is already up to date. Fix: uninstall the package and reinstall it via \
+                 “Search”, or pin it if it updates itself."
+            )),
             _ => installer_info.map(|(_, advice)| advice),
         };
 
@@ -442,7 +462,10 @@ impl Failure {
             if !details.is_empty() {
                 details.push('\n');
             }
-            details.push_str(&format!("winget-Code 0x{code:08X}"));
+            details.push_str(&trf!(
+                "winget-Code 0x{code:08X}",
+                "winget code 0x{code:08X}"
+            ));
         }
 
         // „Administrator(rechte)“, „administrateur“, „administrador“, „elevation“ …
@@ -521,43 +544,92 @@ fn installer_log(lines: &[&str]) -> Option<PathBuf> {
 pub fn describe_installer_code(code: i32) -> Option<(&'static str, &'static str)> {
     Some(match code {
         1603 => (
-            "allgemeiner Installationsfehler",
-            "Häufig läuft das Programm noch – auch im Infobereich neben der Uhr. Programm \
-             vollständig beenden und erneut versuchen. Die genaue Ursache steht im \
-             Installationsprotokoll: nach „Return value 3“ bzw. „Rückgabewert 3“ suchen, die \
-             Zeilen davor nennen den fehlgeschlagenen Schritt.",
+            tr!(
+                "allgemeiner Installationsfehler",
+                "general installation error"
+            ),
+            tr!(
+                "Häufig läuft das Programm noch – auch im Infobereich neben der Uhr. Programm \
+                 vollständig beenden und erneut versuchen. Die genaue Ursache steht im \
+                 Installationsprotokoll: nach „Return value 3“ bzw. „Rückgabewert 3“ suchen, die \
+                 Zeilen davor nennen den fehlgeschlagenen Schritt.",
+                "Often the program is still running – possibly in the system tray next to the \
+                 clock. Quit the program completely and try again. The exact cause is in the \
+                 installer log: search for “Return value 3”; the lines before it show which step \
+                 failed."
+            ),
         ),
         1618 => (
-            "eine andere Installation läuft",
-            "Windows Installer ist gerade mit einer anderen Installation beschäftigt (z. B. \
-             Windows Update). Etwas warten und erneut versuchen.",
+            tr!(
+                "eine andere Installation läuft",
+                "another installation is in progress"
+            ),
+            tr!(
+                "Windows Installer ist gerade mit einer anderen Installation beschäftigt (z. B. \
+                 Windows Update). Etwas warten und erneut versuchen.",
+                "Windows Installer is busy with another installation (e.g. Windows Update). Wait \
+                 a moment and try again."
+            ),
         ),
         1638 => (
-            "andere Version bereits installiert",
-            "Es ist bereits eine andere Version installiert, die der Installer nicht ersetzen \
-             kann. Programm erst deinstallieren, dann neu installieren.",
+            tr!(
+                "andere Version bereits installiert",
+                "another version already installed"
+            ),
+            tr!(
+                "Es ist bereits eine andere Version installiert, die der Installer nicht ersetzen \
+                 kann. Programm erst deinstallieren, dann neu installieren.",
+                "Another version is already installed that the installer cannot replace. \
+                 Uninstall the program first, then install it again."
+            ),
         ),
         1625 => (
-            "durch Richtlinie blockiert",
-            "Eine Gruppenrichtlinie verbietet diese Installation. Ggf. den Administrator fragen.",
+            tr!("durch Richtlinie blockiert", "blocked by policy"),
+            tr!(
+                "Eine Gruppenrichtlinie verbietet diese Installation. Ggf. den Administrator fragen.",
+                "A group policy prohibits this installation. Ask your administrator if needed."
+            ),
         ),
         1633 => (
-            "für dieses System nicht geeignet",
-            "Der Installer passt nicht zu dieser Windows-Version oder Architektur.",
+            tr!(
+                "für dieses System nicht geeignet",
+                "not supported on this system"
+            ),
+            tr!(
+                "Der Installer passt nicht zu dieser Windows-Version oder Architektur.",
+                "The installer does not match this Windows version or architecture."
+            ),
         ),
         1619 | 1620 => (
-            "Installationspaket nicht lesbar",
-            "Der heruntergeladene Installer ist beschädigt oder unvollständig. Erneut versuchen.",
+            tr!(
+                "Installationspaket nicht lesbar",
+                "installation package cannot be read"
+            ),
+            tr!(
+                "Der heruntergeladene Installer ist beschädigt oder unvollständig. Erneut versuchen.",
+                "The downloaded installer is corrupt or incomplete. Try again."
+            ),
         ),
         740 => (
-            "Administratorrechte erforderlich",
-            "Der Installer braucht Administratorrechte. „Updates mit Administratorrechten \
-             installieren“ in den Einstellungen einschalten oder WPM als Administrator starten.",
+            tr!(
+                "Administratorrechte erforderlich",
+                "administrator rights required"
+            ),
+            tr!(
+                "Der Installer braucht Administratorrechte. „Updates mit Administratorrechten \
+                 installieren“ in den Einstellungen einschalten oder WPM als Administrator starten.",
+                "The installer needs administrator rights. Turn on “Install updates with \
+                 administrator rights” in Settings or start WPM as administrator."
+            ),
         ),
         1602 | 1223 => (
-            "abgebrochen",
-            "Der Installer-Dialog oder die Windows-Bestätigung wurde abgelehnt. Mit \
-             Administratorrechten entfällt die Bestätigung.",
+            tr!("abgebrochen", "cancelled"),
+            tr!(
+                "Der Installer-Dialog oder die Windows-Bestätigung wurde abgelehnt. Mit \
+                 Administratorrechten entfällt die Bestätigung.",
+                "The installer dialog or the UAC prompt was declined. With administrator rights, \
+                 there is no UAC prompt."
+            ),
         ),
         _ => return None,
     })
@@ -571,39 +643,83 @@ fn capitalize(text: &str) -> String {
         .unwrap_or_default()
 }
 
-/// Deutsche Kurzbeschreibung bekannter winget-Fehlercodes.
+/// Kurzbeschreibung bekannter winget-Fehlercodes in der Sprache der Oberfläche.
 pub fn describe_code(code: u32) -> Option<&'static str> {
     Some(match code {
-        0x8A15_0008 => "Download fehlgeschlagen",
-        0x8A15_0011 => "Prüfsumme des Installers stimmt nicht",
-        NO_APPLICATIONS_FOUND => "kein passendes Paket gefunden",
-        0x8A15_0016 => "mehrere Pakete passen, Auswahl nicht eindeutig",
-        COMMAND_REQUIRES_ADMIN => "dieser Befehl braucht Administratorrechte",
-        UPDATE_NOT_APPLICABLE => "kein passendes Update für diese Installation",
-        0x8A15_0101 => "die Anwendung läuft gerade – bitte schließen",
-        0x8A15_0102 => "eine andere Installation läuft bereits",
-        0x8A15_0103 => "Dateien werden gerade verwendet",
-        0x8A15_0104 => "eine Abhängigkeit fehlt",
-        0x8A15_0105 => "nicht genügend Speicherplatz",
-        0x8A15_0106 => "nicht genügend Arbeitsspeicher",
-        0x8A15_0107 => "keine Internetverbindung",
-        0x8A15_010A => "Neustart vor der Installation nötig",
+        0x8A15_0008 => tr!("Download fehlgeschlagen", "download failed"),
+        0x8A15_0011 => tr!(
+            "Prüfsumme des Installers stimmt nicht",
+            "installer hash does not match"
+        ),
+        NO_APPLICATIONS_FOUND => tr!("kein passendes Paket gefunden", "no matching package found"),
+        0x8A15_0016 => tr!(
+            "mehrere Pakete passen, Auswahl nicht eindeutig",
+            "multiple packages match, selection is ambiguous"
+        ),
+        COMMAND_REQUIRES_ADMIN => tr!(
+            "dieser Befehl braucht Administratorrechte",
+            "this command requires administrator rights"
+        ),
+        UPDATE_NOT_APPLICABLE => tr!(
+            "kein passendes Update für diese Installation",
+            "no applicable update for this installation"
+        ),
+        0x8A15_0101 => tr!(
+            "die Anwendung läuft gerade – bitte schließen",
+            "the application is currently running – please close it"
+        ),
+        0x8A15_0102 => tr!(
+            "eine andere Installation läuft bereits",
+            "another installation is already in progress"
+        ),
+        0x8A15_0103 => tr!("Dateien werden gerade verwendet", "files are in use"),
+        0x8A15_0104 => tr!("eine Abhängigkeit fehlt", "a dependency is missing"),
+        0x8A15_0105 => tr!("nicht genügend Speicherplatz", "not enough disk space"),
+        0x8A15_0106 => tr!("nicht genügend Arbeitsspeicher", "not enough memory"),
+        0x8A15_0107 => tr!("keine Internetverbindung", "no internet connection"),
+        0x8A15_010A => tr!(
+            "Neustart vor der Installation nötig",
+            "restart required before installation"
+        ),
         INSTALL_CANCELLED_BY_USER => {
-            "abgebrochen – Installer-Dialog oder Windows-Bestätigung wurde abgelehnt"
+            tr!(
+                "abgebrochen – Installer-Dialog oder Windows-Bestätigung wurde abgelehnt",
+                "cancelled – installer dialog or UAC prompt was declined"
+            )
         }
-        0x8A15_010D => "eine andere Version ist bereits installiert",
-        0x8A15_010E => "eine neuere Version ist bereits installiert",
-        0x8A15_010F => "durch Richtlinien blockiert",
-        ERROR_ELEVATION_REQUIRED | MSIX_REQUIRES_ADMIN => "Administratorrechte erforderlich",
-        UAC_CANCELLED => "die Windows-Bestätigung wurde abgelehnt",
-        PACKAGE_IS_PINNED => "das Paket ist angeheftet",
+        0x8A15_010D => tr!(
+            "eine andere Version ist bereits installiert",
+            "another version is already installed"
+        ),
+        0x8A15_010E => tr!(
+            "eine neuere Version ist bereits installiert",
+            "a newer version is already installed"
+        ),
+        0x8A15_010F => tr!("durch Richtlinien blockiert", "blocked by policy"),
+        ERROR_ELEVATION_REQUIRED | MSIX_REQUIRES_ADMIN => tr!(
+            "Administratorrechte erforderlich",
+            "administrator rights required"
+        ),
+        UAC_CANCELLED => tr!(
+            "die Windows-Bestätigung wurde abgelehnt",
+            "the UAC prompt was declined"
+        ),
+        PACKAGE_IS_PINNED => tr!("das Paket ist angeheftet", "the package is pinned"),
         INSTALLER_PROHIBITS_ELEVATION => {
-            "der Installer lässt sich nicht mit Administratorrechten ausführen – \
-             WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen"
+            tr!(
+                "der Installer lässt sich nicht mit Administratorrechten ausführen – \
+                 WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen",
+                "the installer cannot run with administrator rights – \
+                 close WPM, start it normally (without admin rights) and try again"
+            )
         }
         ADMIN_CONTEXT_ACTION_PROHIBITED => {
-            "mit Administratorrechten nicht erlaubt (benutzerbezogenes Programm) – \
-             WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen"
+            tr!(
+                "mit Administratorrechten nicht erlaubt (benutzerbezogenes Programm) – \
+                 WPM schließen, normal (ohne Adminrechte) starten und erneut versuchen",
+                "not allowed with administrator rights (per-user program) – \
+                 close WPM, start it normally (without admin rights) and try again"
+            )
         }
         _ => return None,
     })
@@ -797,5 +913,51 @@ mod tests {
             exit_code: Some(INSTALL_CANCELLED_BY_USER as i32),
         };
         assert!(Failure::from_output(&declined).needs_admin);
+    }
+
+    #[test]
+    fn labels_and_failures_in_english() {
+        use crate::i18n::{Lang, with};
+        with(Lang::En, || {
+            let upgrade = Request::Upgrade {
+                package: package("Git.Git", "winget"),
+            };
+            assert_eq!(upgrade.label(), "Update Test");
+            assert_eq!(
+                Request::Search {
+                    query: "vlc".into(),
+                    source: None,
+                }
+                .label(),
+                "Search for “vlc”"
+            );
+            assert_eq!(
+                describe_code(PACKAGE_IS_PINNED),
+                Some("the package is pinned")
+            );
+            assert_eq!(Failure::cancelled().summary, "Cancelled");
+
+            let out = CommandOutput {
+                lines: vec!["Installer failed with exit code: 1603".into()],
+                exit_code: Some(0x8A15_0101_u32 as i32),
+            };
+            let failure = upgrade.interpret(&out).unwrap_err();
+            assert_eq!(
+                failure.summary,
+                "The application is currently running – please close it"
+            );
+            assert!(failure.details.ends_with("winget code 0x8A150101"));
+
+            let out = CommandOutput {
+                lines: vec!["Installer failed with exit code: 1603".into()],
+                exit_code: Some(0x8A15_0049_u32 as i32),
+            };
+            let failure = Failure::from_output(&out);
+            assert_eq!(
+                failure.summary,
+                "Installer failed with exit code: 1603 (general installation error)"
+            );
+            assert!(failure.advice.unwrap().starts_with("Often the program"));
+        });
     }
 }

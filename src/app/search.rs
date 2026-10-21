@@ -20,7 +20,10 @@ impl WpmApp {
         ui.horizontal(|ui| {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.search_query)
-                    .hint_text("Paketname, ID oder Stichwort …")
+                    .hint_text(tr!(
+                        "Paketname, ID oder Stichwort …",
+                        "Package name, ID or keyword …"
+                    ))
                     .desired_width(320.0),
             );
             if std::mem::take(&mut self.focus_search) {
@@ -31,7 +34,7 @@ impl WpmApp {
             }
             let can_search = !searching && !self.search_query.trim().is_empty();
             if ui
-                .add_enabled(can_search, egui::Button::new("🔍 Suchen"))
+                .add_enabled(can_search, egui::Button::new(tr!("🔍 Suchen", "🔍 Search")))
                 .clicked()
             {
                 start_search = true;
@@ -61,10 +64,21 @@ impl WpmApp {
 
         let mut actions = Vec::new();
         match &self.search_results {
-            None if searching => widgets::message(ui, "Suche läuft …", true),
-            None => widgets::message(ui, "Suchbegriff eingeben und mit Enter bestätigen.", false),
+            None if searching => widgets::message(ui, tr!("Suche läuft …", "Searching …"), true),
+            None => widgets::message(
+                ui,
+                tr!(
+                    "Suchbegriff eingeben und mit Enter bestätigen.",
+                    "Enter a search term and press Enter."
+                ),
+                false,
+            ),
             Some(results) if results.is_empty() => {
-                widgets::message(ui, "Keine Pakete gefunden.", searching);
+                widgets::message(
+                    ui,
+                    tr!("Keine Pakete gefunden.", "No packages found."),
+                    searching,
+                );
             }
             Some(results) => {
                 let installed = self.installed_ids();
@@ -78,7 +92,13 @@ impl WpmApp {
                     .header(HEADER_HEIGHT, |mut header| {
                         widgets::header(
                             &mut header,
-                            &["Name", "ID", "Version", "Quelle", "Aktionen"],
+                            &[
+                                "Name",
+                                "ID",
+                                "Version",
+                                tr!("Quelle", "Source"),
+                                tr!("Aktionen", "Actions"),
+                            ],
                         );
                     })
                     .body(|body| {
@@ -93,8 +113,12 @@ impl WpmApp {
                                     return;
                                 }
                                 if installed.contains(package.id.as_str()) {
-                                    ui.label(RichText::new("✔ Installiert").color(GREEN));
-                                } else if ui.button("⬇ Installieren").clicked() {
+                                    ui.label(
+                                        RichText::new(tr!("✔ Installiert", "✔ Installed"))
+                                            .color(GREEN),
+                                    );
+                                } else if ui.button(tr!("⬇ Installieren", "⬇ Install")).clicked()
+                                {
                                     actions.push(Action::Install(package.clone()));
                                 }
                                 if ui.button("ℹ").on_hover_text("Details").clicked() {

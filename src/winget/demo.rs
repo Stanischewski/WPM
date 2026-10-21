@@ -397,11 +397,17 @@ impl DemoRunner {
                     .iter()
                     .find(|e| e.id.to_lowercase().starts_with(&id))
                 {
-                    Some(e) => Reply::ok(format!(
+                    Some(e) => Reply::ok(trf!(
                         "Found {name} [{id}]\nVersion: {version}\nPublisher: Beispiel-Herausgeber\n\
                          Description: Dies ist eine Beispielbeschreibung für {name}.\n  \
                          Im Demo-Modus werden keine echten Daten abgefragt.\n\
                          Homepage: https://example.org/{tag}\nLicense: Demo-Lizenz\n\
+                         Tags:\n  {tag}\n  demo\nInstaller:\n  Installer Type: exe\n  \
+                         Installer Url: https://example.org/download/{id}.exe\n",
+                        "Found {name} [{id}]\nVersion: {version}\nPublisher: Example Publisher\n\
+                         Description: This is a sample description for {name}.\n  \
+                         Demo mode does not query any real data.\n\
+                         Homepage: https://example.org/{tag}\nLicense: Demo license\n\
                          Tags:\n  {tag}\n  demo\nInstaller:\n  Installer Type: exe\n  \
                          Installer Url: https://example.org/download/{id}.exe\n",
                         name = e.name,
@@ -587,11 +593,16 @@ impl DemoRunner {
                     },
                 }
             }
-            ["import"] => {
-                Reply::ok("Demo: Import wird nur simuliert.\nAll packages are already installed.\n")
-            }
+            ["import"] => Reply::ok(tr!(
+                "Demo: Import wird nur simuliert.\nAll packages are already installed.\n",
+                "Demo: Import is only simulated.\nAll packages are already installed.\n"
+            )),
             _ => Reply {
-                text: format!("Demo: unbekannter Befehl: {}\n", args.join(" ")),
+                text: trf!(
+                    "Demo: unbekannter Befehl: {}\n",
+                    "Demo: unknown command: {}\n",
+                    args.join(" ")
+                ),
                 code: 0x8A15_0002_u32 as i32,
             },
         };
