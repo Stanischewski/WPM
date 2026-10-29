@@ -1,5 +1,5 @@
-//! Windows-spezifisches: Autostart, Administratorrechte, Einzelinstanz und
-//! Benachrichtigungen. Auf anderen Systemen (nur Entwicklung/Demo) Platzhalter.
+//! Windows-spezifisches: Autostart, Startmenü, Administratorrechte,
+//! Einzelinstanz und Benachrichtigungen. Auf anderen Systemen (nur Entwicklung/Demo) Platzhalter.
 //!
 //! Adminrechte gibt es nur über eine sichtbare Windows-Bestätigung (UAC) –
 //! bewusst keinen Weg, WPM ohne Nachfrage erhöht zu starten.
@@ -7,6 +7,7 @@
 use std::io;
 
 pub const AUTOSTART_SUPPORTED: bool = cfg!(windows);
+pub const START_MENU_SUPPORTED: bool = cfg!(windows);
 pub const ELEVATION_SUPPORTED: bool = cfg!(windows);
 
 pub use imp::SingleInstance;
@@ -48,8 +49,8 @@ mod imp {
         SYNCHRONIZATION_SYNCHRONIZE, SetEvent, WaitForSingleObject,
     };
     use windows_sys::Win32::UI::Shell::{
-        FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, KF_FLAG_DEFAULT,
-        SHGetKnownFolderPath, ShellExecuteW,
+        FOLDERID_LocalAppData, FOLDERID_ProgramFiles, FOLDERID_ProgramFilesX86, FOLDERID_Programs,
+        KF_FLAG_DEFAULT, SHGetKnownFolderPath, ShellExecuteW,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         ASFW_ANY, AllowSetForegroundWindow, GetShellWindow, GetWindowThreadProcessId,
@@ -498,6 +499,111 @@ mod imp {
         }
     }
 
+    // --- Verknüpfung im Startmenü ---
+
+    /// `…\Start Menu\Programs\WPM.lnk` des angemeldeten Benutzers.
+    fn start_menu_link() -> Option<PathBuf> {
+        known_folder(&FOLDERID_Programs).map(|dir| dir.join("WPM.lnk"))
+    }
+
+    pub fn start_menu_link_exists() -> bool {
+        start_menu_link().is_some_and(|link| link.is_file())
+    }
+
+    pub fn start_menu_link_target() -> Option<PathBuf> {
+        shortcut::target(&start_menu_link()?).ok()
+    }
+
+    pub fn create_start_menu_link(target: &Path, description: &str) -> io::Result<()> {
+        let link = start_menu_link().ok_or_else(|| {
+            io::Error::other(tr!(
+                "Startmenü-Ordner nicht gefunden",
+                "Start menu folder not found"
+            ))
+        })?;
+        shortcut::create(&link, target, description)
+    }
+
+    pub fn remove_start_menu_link() -> io::Result<()> {
+        let Some(link) = start_menu_link() else {
+            return Ok(());
+        };
+        match fs::remove_file(link) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    }
+
+    /// Verknüpfungen (.lnk) über die COM-Schnittstelle IShellLinkW der Shell.
+    mod shortcut {
+        use std::ffi::OsString;
+        use std::io;
+        use std::os::windows::ffi::OsStringExt;
+        use std::path::{Path, PathBuf};
+
+        use windows::Win32::System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+            CoUninitialize, IPersistFile, STGM_READ,
+        };
+        use windows::Win32::UI::Shell::{IShellLinkW, SLGP_RAWPATH, ShellLink};
+        use windows::core::{HSTRING, Interface};
+
+        /// Führt `f` mit eingerichtetem COM aus. Im Fenster-Thread hat winit
+        /// COM meist schon eingerichtet; dann zählt der Aufruf nur mit. Läuft
+        /// der Thread bereits im MTA-Modus, schlägt CoInitializeEx fehl, COM
+        /// ist aber trotzdem nutzbar.
+        fn with_com<T>(f: impl FnOnce() -> windows::core::Result<T>) -> io::Result<T> {
+            // SAFETY: Jeder erfolgreiche Aufruf (auch S_FALSE) wird unten
+            // mit CoUninitialize ausgeglichen.
+            let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
+            let result = f();
+            if initialized {
+                // SAFETY: Gegenstück zum erfolgreichen CoInitializeEx oben.
+                unsafe { CoUninitialize() };
+            }
+            result.map_err(io::Error::from)
+        }
+
+        fn new_link() -> windows::core::Result<IShellLinkW> {
+            // SAFETY: Standard-Klasse der Shell, im eigenen Prozess erzeugt.
+            unsafe { CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER) }
+        }
+
+        pub fn create(link: &Path, target: &Path, description: &str) -> io::Result<()> {
+            with_com(|| {
+                let shell_link = new_link()?;
+                // SAFETY: Die Zeichenketten leben bis nach dem jeweiligen Aufruf.
+                unsafe {
+                    shell_link.SetPath(&HSTRING::from(target))?;
+                    if let Some(dir) = target.parent() {
+                        shell_link.SetWorkingDirectory(&HSTRING::from(dir))?;
+                    }
+                    shell_link.SetDescription(&HSTRING::from(description))?;
+                    shell_link
+                        .cast::<IPersistFile>()?
+                        .Save(&HSTRING::from(link), true)
+                }
+            })
+        }
+
+        pub fn target(link: &Path) -> io::Result<PathBuf> {
+            with_com(|| {
+                let shell_link = new_link()?;
+                let mut buffer = vec![0u16; 32_768];
+                // SAFETY: Zeichenkette und Puffer leben bis nach dem Aufruf;
+                // GetPath schreibt höchstens `buffer.len()` Zeichen.
+                unsafe {
+                    shell_link
+                        .cast::<IPersistFile>()?
+                        .Load(&HSTRING::from(link), STGM_READ)?;
+                    shell_link.GetPath(&mut buffer, std::ptr::null_mut(), SLGP_RAWPATH.0 as u32)?;
+                }
+                let len = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+                Ok(PathBuf::from(OsString::from_wide(&buffer[..len])))
+            })
+        }
+    }
+
     /// Pfad eines Systemordners (Known Folder), unabhängig von Umgebungsvariablen.
     fn known_folder(id: &GUID) -> Option<PathBuf> {
         let mut raw: *mut u16 = ptr::null_mut();
@@ -609,6 +715,22 @@ mod imp {
 
     pub fn run_entry_exists() -> bool {
         false
+    }
+
+    pub fn start_menu_link_exists() -> bool {
+        false
+    }
+
+    pub fn start_menu_link_target() -> Option<std::path::PathBuf> {
+        None
+    }
+
+    pub fn create_start_menu_link(_target: &std::path::Path, _description: &str) -> io::Result<()> {
+        Err(unsupported())
+    }
+
+    pub fn remove_start_menu_link() -> io::Result<()> {
+        Ok(())
     }
 
     pub fn set_run_entry() -> io::Result<()> {
@@ -782,6 +904,60 @@ pub fn set_autostart(enabled: bool) -> io::Result<()> {
     }
 }
 
+/// Gibt es die Verknüpfung „WPM“ im Startmenü des Benutzers?
+pub fn start_menu_entry_exists() -> bool {
+    imp::start_menu_link_exists()
+}
+
+/// Legt die Verknüpfung „WPM“ im Startmenü an bzw. entfernt sie. Sie zeigt
+/// auf den echten Speicherort der EXE (siehe [`exe_path`]), der bei
+/// winget-Installationen über Updates gleich bleibt.
+pub fn set_start_menu_entry(enabled: bool) -> io::Result<()> {
+    if enabled {
+        imp::create_start_menu_link(&exe_path()?, start_menu_description())
+    } else {
+        imp::remove_start_menu_link()
+    }
+}
+
+/// Erneuert eine vorhandene Verknüpfung, wenn sie nicht (mehr) auf diese EXE
+/// zeigt – z. B. nachdem wpm.exe verschoben wurde.
+pub fn refresh_start_menu_entry() -> io::Result<()> {
+    let exe = exe_path()?;
+    match imp::start_menu_link_target() {
+        Some(target) if same_path(&target, &exe) => Ok(()),
+        _ => imp::create_start_menu_link(&exe, start_menu_description()),
+    }
+}
+
+/// Tooltip der Verknüpfung im Startmenü.
+fn start_menu_description() -> &'static str {
+    tr!(
+        "Updates und Programme über winget verwalten",
+        "Manage updates and programs with winget"
+    )
+}
+
+/// Pfade unter Windows: Groß-/Kleinschreibung und Schrägstriche egal.
+fn same_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    let normalize = |p: &std::path::Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+    normalize(a) == normalize(b)
+}
+
+/// Wurde WPM über winget installiert? Portable Pakete legt winget unter
+/// `…\WinGet\Packages\…` ab – für den Benutzer unter `%LOCALAPPDATA%\Microsoft`,
+/// systemweit unter „Programme“ – und legt dafür keinen Startmenü-Eintrag an.
+pub fn installed_by_winget() -> bool {
+    exe_path().is_ok_and(|exe| is_winget_package(&exe))
+}
+
+fn is_winget_package(path: &std::path::Path) -> bool {
+    path.to_string_lossy()
+        .to_lowercase()
+        .replace('/', "\\")
+        .contains(r"\winget\packages\")
+}
+
 /// Liegt wpm.exe unter „Programme“? Mit Adminrechten aus einem beschreibbaren
 /// Ordner (z. B. Downloads) könnten dort abgelegte fremde DLLs mitgeladen werden.
 pub fn exe_in_protected_folder() -> bool {
@@ -857,5 +1033,41 @@ mod tests {
         assert_eq!(quote_arg(r"C:\Program Files\"), r#""C:\Program Files\\""#);
         assert_eq!(quote_arg(r#"a "b" c"#), r#""a \"b\" c""#);
         assert_eq!(quote_arg(r"a\\b c"), r#""a\\b c""#);
+    }
+
+    #[test]
+    fn winget_installations_are_recognized() {
+        use std::path::Path;
+        let user = r"C:\Users\x\AppData\Local\Microsoft\WinGet\Packages\Stanischewski.WPM_Microsoft.Winget.Source_8wekyb3d8bbwe\wpm.exe";
+        let machine = r"C:\Program Files\WinGet\Packages\Stanischewski.WPM_Microsoft.Winget.Source_8wekyb3d8bbwe\wpm.exe";
+        assert!(is_winget_package(Path::new(user)));
+        assert!(is_winget_package(Path::new(machine)));
+        assert!(!is_winget_package(Path::new(
+            r"C:\Users\x\Downloads\wpm.exe"
+        )));
+        assert!(!is_winget_package(Path::new(
+            r"C:\Program Files\WPM\wpm.exe"
+        )));
+        // Auch der Link unter WinGet\Links ist kein Paketordner.
+        assert!(!is_winget_package(Path::new(
+            r"C:\Users\x\AppData\Local\Microsoft\WinGet\Links\wpm.exe"
+        )));
+    }
+
+    #[test]
+    fn paths_are_compared_like_windows_does() {
+        use std::path::Path;
+        assert!(same_path(
+            Path::new(r"C:\Program Files\WPM\wpm.exe"),
+            Path::new(r"c:\program files\wpm\WPM.EXE")
+        ));
+        assert!(same_path(
+            Path::new("C:/WPM/wpm.exe"),
+            Path::new(r"C:\WPM\wpm.exe")
+        ));
+        assert!(!same_path(
+            Path::new(r"C:\WPM\wpm.exe"),
+            Path::new(r"D:\WPM\wpm.exe")
+        ));
     }
 }

@@ -15,7 +15,9 @@ winget/manifests/s/Stanischewski/WPM/0.2.2/
 
 Typ `portable`: winget lädt `wpm.exe` herunter, legt sie unter
 `%LOCALAPPDATA%\Microsoft\WinGet\Packages\…` ab und macht sie als Befehl `wpm`
-verfügbar. Einen Startmenü-Eintrag legt winget dafür nicht an.
+verfügbar. Einen Startmenü-Eintrag legt winget dafür nicht an – das übernimmt
+WPM (nach Version 0.3.0) beim ersten Start selbst, abschaltbar unter
+*Einstellungen → Allgemein*.
 
 ## 1. Vorab prüfen (Windows)
 

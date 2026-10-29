@@ -160,6 +160,12 @@ pub struct Settings {
     pub version: u32,
     /// Mit Windows starten (Eintrag unter `HKCU\…\Run`).
     pub autostart: bool,
+    /// Verknüpfung „WPM“ im Startmenü. Wie `autostart` gibt das den
+    /// tatsächlichen Zustand wieder, nicht nur einen Wunsch.
+    pub start_menu: bool,
+    /// Über winget installiert wurde die Verknüpfung schon einmal automatisch
+    /// angelegt; danach entscheidet nur noch die Einstellung.
+    pub start_menu_offered: bool,
     /// Beim Autostart nur im Infobereich bzw. minimiert in der Taskleiste starten.
     pub start_minimized: bool,
     /// Symbol im Infobereich der Taskleiste anzeigen.
@@ -192,6 +198,8 @@ impl Default for Settings {
         Self {
             version: SETTINGS_VERSION,
             autostart: false,
+            start_menu: false,
+            start_menu_offered: false,
             start_minimized: true,
             tray_icon: true,
             close_to_tray: true,

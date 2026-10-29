@@ -37,7 +37,7 @@ mit einem Klick installieren, fertig.
 | **Updates** | Verfügbare Updates anzeigen, einzeln, ausgewählt oder alle installieren. Pakete „anheften“ (Update ignorieren) bzw. wieder lösen. |
 | **Installiert** | Alle installierten Programme, filterbar nach Name/ID, mit Details, Aktualisieren und Deinstallieren (mit Rückfrage). |
 | **Suchen** | Neue Pakete in winget und/oder Microsoft Store finden und installieren. Bereits installierte Pakete sind markiert. |
-| **Einstellungen** | Sprache (wie Windows/Deutsch/Englisch), Mit Windows starten (optional unsichtbar im Infobereich), Symbol im Infobereich und Weiterlaufen im Hintergrund (siehe unten), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
+| **Einstellungen** | Sprache (wie Windows/Deutsch/Englisch), Mit Windows starten (optional unsichtbar im Infobereich), Eintrag im Startmenü, Symbol im Infobereich und Weiterlaufen im Hintergrund (siehe unten), Updates mit Administratorrechten (siehe unten), Updates beim Start und regelmäßig im Hintergrund prüfen, Windows-Benachrichtigung bei neuen Updates, Installationsmodus (still/Standard/interaktiv), Installationsbereich (Benutzer/System), Darstellung (hell/dunkel/wie Windows). Außerdem: winget-Quellen anzeigen und aktualisieren, angeheftete Pakete verwalten, Paketliste exportieren/importieren. |
 | **Protokoll** | Jeder ausgeführte winget-Befehl mit seiner vollständigen Ausgabe. |
 
 Aufträge landen in einer Warteschlange und laufen nacheinander (winget mag
@@ -76,10 +76,16 @@ Beides lässt sich unter *Einstellungen → Allgemein* ein- und ausschalten
 Voraussetzung: Windows 10/11 mit installiertem **App-Installer** (enthält
 `winget`, ist auf aktuellen Systemen vorinstalliert).
 
-Am einfachsten über „Hier downloaden“ ganz oben. Wer
-„Mit Windows starten“ nutzen möchte, legt `wpm.exe` vorher an einen festen
-Ort, am besten nach `C:\Program Files\WPM` (siehe
+Am einfachsten über „Hier downloaden“ ganz oben. Wer „Mit Windows starten“
+oder „Im Startmenü anzeigen“ nutzen möchte, legt `wpm.exe` vorher an einen
+festen Ort, am besten nach `C:\Program Files\WPM` (siehe
 [Weniger Nachfragen beim Aktualisieren](#weniger-nachfragen-beim-aktualisieren)).
+
+**Startmenü:** *Einstellungen → Allgemein → Im Startmenü anzeigen* legt die
+Verknüpfung „WPM“ im Startmenü an. Ist WPM über winget installiert, passiert
+das beim ersten Start automatisch – winget selbst legt für portable Programme
+keine an. Schaltet man es aus, bleibt es aus. Wird `wpm.exe` verschoben,
+erneuert WPM die Verknüpfung beim nächsten Start.
 
 Selbst bauen:
 
@@ -200,7 +206,7 @@ anheften, vor allem wenn es sich ohnehin selbst aktualisiert.
 
 ```sh
 rustup target add x86_64-pc-windows-gnu
-sudo apt install gcc-mingw-w64-x86-64
+sudo apt install gcc-mingw-w64-x86-64   # enthält auch windres für das Programmsymbol
 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
   cargo build --release --target x86_64-pc-windows-gnu
 ```
@@ -235,6 +241,7 @@ Weitere Möglichkeiten, die sich später ergänzen ließen:
 ```
 src/
 ├── main.rs            Startparameter, Fenster
+├── icon/              Programmsymbol (draw.rs zeichnet es in jeder Größe)
 ├── app/               Oberfläche (ein Modul je Reiter)
 ├── winget/
 │   ├── mod.rs         Befehle bauen, Ergebnisse auswerten, Fehlercodes
@@ -247,7 +254,8 @@ src/
 ├── settings.rs        Einstellungen (%APPDATA%\WPM\settings.json)
 ├── i18n.rs            Sprache der Oberfläche (Deutsch/Englisch)
 ├── tray.rs            Symbol im Infobereich
-└── system.rs          Autostart, Adminrechte, Einzelinstanz, Benachrichtigungen
+└── system.rs          Autostart, Startmenü, Adminrechte, Einzelinstanz, Benachrichtigungen
+build.rs               bettet Symbol und Versionsangaben in die EXE ein (Windows)
 ```
 
 Autostart schreibt den Eintrag `WPM` unter
@@ -287,8 +295,8 @@ keine Nachfrage beim Anmelden).
   und startet WPM wieder (im Infobereich, wenn es vorher dort war). Ist WPM
   systemweit installiert (unter „Programme“), fragt Windows dafür einmal nach
   Adminrechten. Deinstallieren kann sich WPM nicht selbst – dafür „Mit Windows
-  starten“ ausschalten, WPM beenden und `winget uninstall Stanischewski.WPM`
-  ausführen.
+  starten“ und „Im Startmenü anzeigen“ ausschalten, WPM beenden und
+  `winget uninstall Stanischewski.WPM` ausführen.
 - **Autostart und Neustarts** verwenden den echten Speicherort von `wpm.exe`
   (Verknüpfungen aufgelöst), damit sie auch nach einem Update über winget
   weiter funktionieren.
@@ -298,7 +306,8 @@ keine Nachfrage beim Anmelden).
 - statt Text-Parsing die WinGet-COM-API (`Microsoft.Management.Deployment`)
   oder das PowerShell-Modul `Microsoft.WinGet.Client` nutzen
 - weitere Paketmanager wie Scoop oder Chocolatey
-- Programmsymbol in der EXE (Ressourcendatei)
+- Benachrichtigungen unter dem Namen „WPM“ statt „Windows PowerShell“
+  (AppUserModelID an der Verknüpfung im Startmenü)
 
 ## Lizenz
 

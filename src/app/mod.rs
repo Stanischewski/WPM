@@ -237,6 +237,26 @@ impl WpmApp {
             }
         }
 
+        // Startmenü: genauso. winget legt für portable Programme keinen
+        // Eintrag an; über winget installiert legt WPM ihn deshalb beim ersten
+        // normalen Start selbst an (danach nie wieder ungefragt).
+        if system::START_MENU_SUPPORTED {
+            settings.start_menu = system::start_menu_entry_exists();
+            if !flags.demo && !flags.other_account {
+                if settings.start_menu {
+                    let _ = system::refresh_start_menu_entry();
+                }
+                if !settings.start_menu_offered && !flags.elevated && system::installed_by_winget()
+                {
+                    if !settings.start_menu {
+                        settings.start_menu = system::set_start_menu_entry(true).is_ok();
+                    }
+                    settings.start_menu_offered = true;
+                    let _ = settings.save();
+                }
+            }
+        }
+
         let runner: Arc<dyn Runner> = if flags.demo {
             Arc::new(DemoRunner::default())
         } else {
@@ -656,12 +676,13 @@ impl WpmApp {
         }
         self.notices.push(Notice {
             advice: trf!(
-                "„Mit Windows starten“ ausschalten, WPM beenden (Rechtsklick auf das Symbol im Infobereich, „Beenden“) \
-                 und dann in einem Terminal „winget uninstall {}“ ausführen – oder WPM unter \
-                 Windows-Einstellungen > Apps deinstallieren.",
-                "Turn off “Start with Windows”, quit WPM (right-click the icon in the system tray, “Quit”) \
-                 and then run “winget uninstall {}” in a terminal – or uninstall WPM under \
-                 Windows Settings > Apps.",
+                "„Mit Windows starten“ und „Im Startmenü anzeigen“ ausschalten, WPM beenden \
+                 (Rechtsklick auf das Symbol im Infobereich, „Beenden“) und dann in einem Terminal \
+                 „winget uninstall {}“ ausführen – oder WPM unter Windows-Einstellungen > Apps \
+                 deinstallieren.",
+                "Turn off “Start with Windows” and “Show in Start menu”, quit WPM (right-click the \
+                 icon in the system tray, “Quit”) and then run “winget uninstall {}” in a terminal – \
+                 or uninstall WPM under Windows Settings > Apps.",
                 self_update::PACKAGE_ID
             ),
             persistent: true,
@@ -1060,6 +1081,19 @@ impl WpmApp {
                     trf!(
                         "Autostart konnte nicht geändert werden: {e}",
                         "Could not change autostart: {e}"
+                    ),
+                );
+            }
+        }
+        if self.settings.start_menu != before.start_menu && system::START_MENU_SUPPORTED {
+            let result = system::set_start_menu_entry(self.settings.start_menu);
+            self.settings.start_menu = system::start_menu_entry_exists();
+            if let Err(e) = result {
+                self.notice(
+                    NoticeKind::Error,
+                    trf!(
+                        "Startmenü-Eintrag konnte nicht geändert werden: {e}",
+                        "Could not change the Start menu entry: {e}"
                     ),
                 );
             }

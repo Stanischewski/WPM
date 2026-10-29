@@ -87,6 +87,29 @@ impl WpmApp {
                 .on_disabled_hover_text(tr!("Nur unter Windows verfügbar", "Only available on Windows"));
 
                 ui.add_space(4.0);
+                ui.add_enabled_ui(system::START_MENU_SUPPORTED, |ui| {
+                    ui.checkbox(
+                        &mut settings.start_menu,
+                        tr!("Im Startmenü anzeigen", "Show in Start menu"),
+                    );
+                    ui.indent("start_menu_options", |ui| {
+                        hint(
+                            ui,
+                            tr!(
+                                "Legt die Verknüpfung „WPM“ im Startmenü an. Über winget installiert \
+                                 geschieht das beim ersten Start automatisch, weil winget selbst \
+                                 keine anlegt.",
+                                "Adds a “WPM” shortcut to the Start menu. When WPM is installed with \
+                                 winget, this happens automatically on first start, because winget \
+                                 does not create one."
+                            ),
+                        );
+                    });
+                })
+                .response
+                .on_disabled_hover_text(tr!("Nur unter Windows verfügbar", "Only available on Windows"));
+
+                ui.add_space(4.0);
                 ui.add_enabled_ui(tray::SUPPORTED, |ui| {
                     ui.checkbox(
                         &mut settings.tray_icon,
@@ -424,14 +447,15 @@ impl WpmApp {
                 }
                 ui.add_space(4.0);
                 if ui.button(tr!("Standardwerte wiederherstellen", "Restore defaults")).clicked() {
-                    // Die Sprache bleibt: Sonst wechselt sie ungefragt.
-                    let autostart = self.settings.autostart;
-                    let background_hint_shown = self.settings.background_hint_shown;
-                    let language = self.settings.language;
+                    // Autostart und Startmenü geben wieder, was eingetragen ist;
+                    // die Sprache bleibt, sonst wechselt sie ungefragt.
+                    let current = &self.settings;
                     self.settings = Settings {
-                        autostart,
-                        background_hint_shown,
-                        language,
+                        autostart: current.autostart,
+                        start_menu: current.start_menu,
+                        start_menu_offered: current.start_menu_offered,
+                        background_hint_shown: current.background_hint_shown,
+                        language: current.language,
                         ..Settings::default()
                     };
                 }
