@@ -50,7 +50,8 @@ windows-sys = { version = "0.61", features = [
 
 [build-dependencies]
 # Symbol und Versionsangaben in die EXE einbetten (siehe build.rs).
-winresource = "0.1"
+# Ohne „toml“: Alle Angaben stehen in build.rs, nicht in Cargo.toml.
+winresource = { version = "0.1", default-features = false }
 
 [profile.release]
 lto = "thin"

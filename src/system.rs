@@ -556,12 +556,14 @@ mod imp {
             // SAFETY: Jeder erfolgreiche Aufruf (auch S_FALSE) wird unten
             // mit CoUninitialize ausgeglichen.
             let initialized = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
-            let result = f();
+            // Fehler sofort umwandeln: windows::core::Error hält ein COM-Objekt
+            // (IErrorInfo), das vor CoUninitialize freigegeben sein muss.
+            let result = f().map_err(io::Error::from);
             if initialized {
                 // SAFETY: Gegenstück zum erfolgreichen CoInitializeEx oben.
                 unsafe { CoUninitialize() };
             }
-            result.map_err(io::Error::from)
+            result
         }
 
         fn new_link() -> windows::core::Result<IShellLinkW> {
@@ -920,12 +922,14 @@ pub fn set_start_menu_entry(enabled: bool) -> io::Result<()> {
     }
 }
 
-/// Erneuert eine vorhandene Verknüpfung, wenn sie nicht (mehr) auf diese EXE
-/// zeigt – z. B. nachdem wpm.exe verschoben wurde.
+/// Erneuert eine vorhandene Verknüpfung, wenn sie ins Leere zeigt – z. B.
+/// nachdem wpm.exe verschoben wurde. Zeigt sie auf eine andere vorhandene
+/// Datei (eine zweite WPM-Kopie, eine selbst angelegte Verknüpfung), bleibt
+/// sie, wie sie ist: Eine einmal gestartete Testkopie soll sie nicht übernehmen.
 pub fn refresh_start_menu_entry() -> io::Result<()> {
     let exe = exe_path()?;
     match imp::start_menu_link_target() {
-        Some(target) if same_path(&target, &exe) => Ok(()),
+        Some(target) if same_path(&target, &exe) || target.is_file() => Ok(()),
         _ => imp::create_start_menu_link(&exe, start_menu_description()),
     }
 }

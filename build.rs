@@ -7,7 +7,6 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
-#[allow(dead_code)]
 #[path = "src/icon/draw.rs"]
 mod draw;
 

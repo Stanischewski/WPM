@@ -251,8 +251,12 @@ impl WpmApp {
                     if !settings.start_menu {
                         settings.start_menu = system::set_start_menu_entry(true).is_ok();
                     }
-                    settings.start_menu_offered = true;
-                    let _ = settings.save();
+                    // Schlug das Anlegen fehl (z. B. umgeleiteter Ordner noch
+                    // nicht erreichbar), beim nächsten Start erneut versuchen.
+                    if settings.start_menu {
+                        settings.start_menu_offered = true;
+                        let _ = settings.save();
+                    }
                 }
             }
         }
@@ -1086,6 +1090,8 @@ impl WpmApp {
             }
         }
         if self.settings.start_menu != before.start_menu && system::START_MENU_SUPPORTED {
+            // Eine eigene Entscheidung: nicht später automatisch wieder anlegen.
+            self.settings.start_menu_offered = true;
             let result = system::set_start_menu_entry(self.settings.start_menu);
             self.settings.start_menu = system::start_menu_entry_exists();
             if let Err(e) = result {

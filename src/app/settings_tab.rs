@@ -96,9 +96,9 @@ impl WpmApp {
                         hint(
                             ui,
                             tr!(
-                                "Legt die Verknüpfung „WPM“ im Startmenü an. Über winget installiert \
-                                 geschieht das beim ersten Start automatisch, weil winget selbst \
-                                 keine anlegt.",
+                                "Legt die Verknüpfung „WPM“ im Startmenü an. Bei einer Installation \
+                                 über winget geschieht das beim ersten Start automatisch, weil winget \
+                                 selbst keine anlegt.",
                                 "Adds a “WPM” shortcut to the Start menu. When WPM is installed with \
                                  winget, this happens automatically on first start, because winget \
                                  does not create one."

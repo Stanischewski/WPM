@@ -84,8 +84,8 @@ festen Ort, am besten nach `C:\Program Files\WPM` (siehe
 **Startmenü:** *Einstellungen → Allgemein → Im Startmenü anzeigen* legt die
 Verknüpfung „WPM“ im Startmenü an. Ist WPM über winget installiert, passiert
 das beim ersten Start automatisch – winget selbst legt für portable Programme
-keine an. Schaltet man es aus, bleibt es aus. Wird `wpm.exe` verschoben,
-erneuert WPM die Verknüpfung beim nächsten Start.
+keine an. Schaltet man es aus, bleibt es aus. Zeigt die Verknüpfung ins Leere,
+weil `wpm.exe` verschoben wurde, erneuert WPM sie beim nächsten Start.
 
 Selbst bauen:
 
