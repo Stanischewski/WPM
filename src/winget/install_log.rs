@@ -162,10 +162,8 @@ fn ansi(bytes: &[u8]) -> String {
 }
 
 fn utf16le(bytes: &[u8]) -> String {
-    let units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
+    let (pairs, _) = bytes.as_chunks::<2>();
+    let units: Vec<u16> = pairs.iter().map(|&pair| u16::from_le_bytes(pair)).collect();
     String::from_utf16_lossy(&units)
 }
 
