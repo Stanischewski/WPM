@@ -184,10 +184,20 @@ Grenzen:
 **Fehlermeldungen** zeigen eine Kurzfassung und, wo bekannt, eine Erklärung
 mit Abhilfe – z. B. bei Installer-Exitcode **1603** (allgemeiner Fehler, meist
 läuft das Programm noch), 1618, 1638 oder 740, oder bei **„kein passendes
-Update“** (`0x8A15002B`: die neue Version passt nicht zur Installationsart;
-neu installieren oder anheften). Nennt winget ein Installationsprotokoll, gibt
-es den Knopf „Protokoll öffnen“, bei nicht passenden Updates „Anheften“. Die
-vollständige Ausgabe von winget steht unter „Details“.
+Update“** (`0x8A15002B`) bzw. **anderer Installationsart** (`0x8A15008E`):
+die neue Version passt nicht zur vorhandenen Installation; neu installieren
+oder anheften. Nennt winget ein Installationsprotokoll, gibt es den Knopf
+„Protokoll öffnen“, bei nicht passenden Updates „Anheften“. Die vollständige
+Ausgabe von winget steht unter „Details“.
+
+Bei **MSI-Installern** liest WPM das Protokoll selbst: Es sucht den
+fehlgeschlagenen Schritt („Return value 3“) und die Meldung davor – vom
+Windows Installer (z. B. „Fehler 1714. Die ältere Version … kann nicht
+entfernt werden“, dazu ein passender Rat) oder vom Hersteller (z. B. „This app
+is already installed for everyone …“). Diese Ursache steht dann direkt in der
+Meldung. Scheitern **mehrere Pakete auf dieselbe Weise**, fasst WPM sie zu
+einer Meldung zusammen („3 Updates fehlgeschlagen: …“), mit einer Zeile je
+Paket samt Ursache und eigenen Knöpfen.
 
 **Update hängt?** Manche Installer öffnen trotz „Still“ ein eigenes Fenster
 und warten dort – z. B. `rustup-init` (Paket `Rustlang.Rustup`), wenn noch
@@ -246,6 +256,7 @@ src/
 ├── winget/
 │   ├── mod.rs         Befehle bauen, Ergebnisse auswerten, Fehlercodes
 │   ├── parse.rs       Parser für die Tabellen-Ausgabe von winget
+│   ├── install_log.rs Ursache aus dem Protokoll eines MSI-Installers
 │   └── demo.rs        simuliertes winget für --demo und Tests
 ├── runner.rs          winget als Prozess starten, Ausgabe live lesen
 ├── worker.rs          Warteschlange im Hintergrund-Thread
