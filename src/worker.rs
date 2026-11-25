@@ -181,7 +181,11 @@ fn execute(
     if output.exit_code.is_none() {
         return Err(Failure::cancelled());
     }
-    job.request.interpret(&output)
+    job.request.interpret(&output).map_err(|mut failure| {
+        // Hier im Worker-Thread: Das Protokoll kann groß sein.
+        failure.read_install_log();
+        failure
+    })
 }
 
 /// Benachrichtigt nur über Updates, die seit der letzten Prüfung neu sind.

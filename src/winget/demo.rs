@@ -223,6 +223,36 @@ impl Default for DemoRunner {
     }
 }
 
+/// Schreibt für Pakete, deren Update in der Demo scheitert, ein
+/// MSI-Protokoll wie ein echter Installer und gibt seinen Pfad zurück.
+fn write_failure_log(entry: &CatalogEntry) -> Option<std::path::PathBuf> {
+    let name = entry.name;
+    let body = match entry.id {
+        // Für alle Benutzer installiert, das Update will aber nur für den
+        // aktuellen Benutzer installieren (wie bei manchen WiX-Installern).
+        "Microsoft.PowerToys" | "Microsoft.VisualStudioCode" => format!(
+            "Action start 10:00:00: LaunchConditions.\n\
+             MSI (s) (D8:64) [10:00:00:480]: Product: {name} -- This app is already installed \
+             for everyone. Choose Everyone to update it, or pass ALLUSERS=1 to msiexec.\n\
+             Action ended 10:00:00: LaunchConditions. Return value 3.\n"
+        ),
+        _ => return None,
+    };
+    let text = format!(
+        "=== Logging started: 01.12.2026  10:00:00 ===\n\
+         Action start 10:00:00: INSTALL.\n\
+         {body}\
+         Action ended 10:00:02: INSTALL. Return value 3.\n\
+         MSI (s) (A0:B4) [10:00:02:000]: Product: {name} -- Installation failed.\n\
+         === Logging stopped: 01.12.2026  10:00:02 ===\n"
+    );
+    let dir = std::env::temp_dir().join("wpm-demo");
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{}.log", entry.id));
+    std::fs::write(&path, text).ok()?;
+    Some(path)
+}
+
 /// Antwort eines simulierten Befehls: Text (darf `\r` enthalten) und Exitcode.
 struct Reply {
     text: String,
@@ -475,12 +505,15 @@ impl DemoRunner {
                         code: super::INSTALL_CANCELLED_BY_USER as i32,
                     });
                 }
-                // Läuft das Programm noch, bricht das MSI mit 1603 ab.
-                if entry.id == "Microsoft.PowerToys" {
+                // Einige MSI-Installer brechen mit 1603 ab und hinterlassen ein
+                // Protokoll, das WPM auswertet.
+                if let Some(log) = write_failure_log(entry) {
                     return Some(Reply {
-                        text: "Installer failed with exit code: 1603\n\
-                               Installer log is available at: C:\\Users\\demo\\AppData\\Local\\Temp\\PowerToys.log\n"
-                            .into(),
+                        text: format!(
+                            "Installer failed with exit code: 1603\n\
+                             Installer log is available at: {}\n",
+                            log.display()
+                        ),
                         code: 0x8A15_0049_u32 as i32,
                     });
                 }

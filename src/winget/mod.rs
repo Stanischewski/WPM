@@ -1,6 +1,7 @@
 //! Anbindung an die winget-CLI: Befehlszeilen bauen und Ausgaben auswerten.
 
 pub mod demo;
+pub mod install_log;
 pub mod parse;
 
 use std::path::PathBuf;
@@ -141,6 +142,8 @@ pub const INSTALLER_PROHIBITS_ELEVATION: u32 = 0x8A15_0056;
 /// Benutzerbezogene Programme lassen sich mit Adminrechten nicht deinstallieren.
 pub const ADMIN_CONTEXT_ACTION_PROHIBITED: u32 = 0x8A15_007D;
 pub const PACKAGE_IS_PINNED: u32 = 0x8A15_0068;
+/// Die neue Version verwendet eine andere Installationsart (z. B. MSI statt EXE).
+pub const UPGRADE_INSTALL_TECH_MISMATCH: u32 = 0x8A15_008E;
 
 const ACCEPT_SOURCE: &str = "--accept-source-agreements";
 const ACCEPT_PACKAGE: &str = "--accept-package-agreements";
@@ -371,14 +374,23 @@ pub struct Failure {
     pub code: Option<u32>,
     /// Exitcode des Installers selbst (z. B. 1603 bei MSI), sofern genannt.
     pub installer_code: Option<i32>,
-    /// Protokolldatei des Installers, die winget nennt.
-    pub log_path: Option<PathBuf>,
+    /// Protokoll des Installers, das winget nennt; als Box, damit
+    /// `Result<_, Failure>` klein bleibt.
+    pub installer_log: Option<Box<InstallerLog>>,
     pub cancelled: bool,
     /// Mit Administratorrechten würde der Vorgang vermutlich klappen bzw.
     /// ohne Windows-Bestätigung durchlaufen.
     pub needs_admin: bool,
     /// Die neue Version passt nicht zu dieser Installation – Anheften anbieten.
     pub suggest_pin: bool,
+}
+
+/// Protokoll eines Installers: wo es liegt und welche Ursache darin steht.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallerLog {
+    pub path: PathBuf,
+    /// Ursache laut Protokoll (siehe [`Failure::read_install_log`]).
+    pub cause: Option<install_log::LogCause>,
 }
 
 /// Fehlercodes, bei denen ein Start mit Adminrechten helfen dürfte.
@@ -399,7 +411,7 @@ impl Failure {
             details: String::new(),
             code: None,
             installer_code: None,
-            log_path: None,
+            installer_log: None,
             cancelled: false,
             needs_admin: false,
             suggest_pin: false,
@@ -443,6 +455,15 @@ impl Failure {
                 .into()
             });
         let advice = match code {
+            Some(UPGRADE_INSTALL_TECH_MISMATCH) => Some(tr!(
+                "Die neue Version wird anders installiert als die vorhandene (z. B. MSI statt \
+                 EXE), deshalb kann winget sie nicht einfach darüber installieren. Abhilfe: Paket \
+                 deinstallieren und über „Suchen“ neu installieren, oder anheften, wenn es sich \
+                 selbst aktualisiert.",
+                "The new version is installed differently from the existing one (e.g. MSI \
+                 instead of EXE), so winget cannot simply install it over it. Fix: uninstall the \
+                 package and reinstall it via “Search”, or pin it if it updates itself."
+            )),
             Some(UPDATE_NOT_APPLICABLE) => Some(tr!(
                 "winget kennt eine neuere Version, deren Installer aber nicht zu dieser \
                  Installation passt (andere Installationsart, anderer Bereich oder andere \
@@ -489,18 +510,96 @@ impl Failure {
             details,
             code,
             installer_code,
-            log_path: installer_log(&lines),
+            installer_log: installer_log_path(&lines)
+                .map(|path| Box::new(InstallerLog { path, cause: None })),
             cancelled: false,
             needs_admin,
-            suggest_pin: code == Some(UPDATE_NOT_APPLICABLE),
+            suggest_pin: matches!(
+                code,
+                Some(UPDATE_NOT_APPLICABLE | UPGRADE_INSTALL_TECH_MISMATCH)
+            ),
         }
+    }
+
+    /// Liest das Installationsprotokoll, das winget genannt hat, und sucht
+    /// darin die Ursache (nur bei MSI-Installern). Liest eine Datei – nicht
+    /// im Fenster-Thread aufrufen.
+    pub fn read_install_log(&mut self) {
+        let Some(log) = &mut self.installer_log else {
+            return;
+        };
+        log.cause = install_log::read(&log.path);
+        if self
+            .log_cause()
+            .is_some_and(|cause| matches!(cause.error, Some(1925 | 1730)))
+            && !matches!(
+                self.code,
+                Some(INSTALLER_PROHIBITS_ELEVATION | ADMIN_CONTEXT_ACTION_PROHIBITED)
+            )
+        {
+            self.needs_admin = true;
+        }
+    }
+
+    /// Protokolldatei des Installers, falls winget eine nennt.
+    pub fn log_path(&self) -> Option<&std::path::Path> {
+        self.installer_log.as_ref().map(|log| log.path.as_path())
+    }
+
+    /// Ursache laut Installationsprotokoll, falls gefunden.
+    pub fn log_cause(&self) -> Option<&install_log::LogCause> {
+        self.installer_log.as_ref()?.cause.as_ref()
+    }
+
+    /// Ursache laut Installationsprotokoll in einer Zeile, falls bekannt.
+    pub fn cause(&self) -> Option<String> {
+        self.log_cause().and_then(install_log::LogCause::describe)
+    }
+
+    /// Was man tun kann. Ist die Ursache aus dem Protokoll bekannt, ersetzt
+    /// ein passender Rat die allgemeine Vermutung – oder die Meldung des
+    /// Installers spricht für sich.
+    pub fn advice_text(&self) -> String {
+        let specific = self
+            .log_cause()
+            .and_then(|cause| cause.error)
+            .and_then(install_log::advice);
+        let has_message = self
+            .log_cause()
+            .is_some_and(|cause| cause.message.is_some());
+        let mut text = match (specific, self.advice) {
+            (Some(advice), _) => advice.to_string(),
+            (None, Some(advice)) if !has_message => advice.to_string(),
+            _ => String::new(),
+        };
+        if self.installer_code == Some(1603) && self.log_cause().is_none() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(tr!(
+                "Die genaue Ursache steht im Installationsprotokoll: nach „Return value 3“ bzw. \
+                 „Rückgabewert 3“ suchen, die Zeilen davor nennen den fehlgeschlagenen Schritt.",
+                "The exact cause is in the installer log: search for “Return value 3”; the lines \
+                 before it show which step failed."
+            ));
+        }
+        text
+    }
+
+    /// Ursache und Rat zusammen, je in einer eigenen Zeile.
+    pub fn explanation(&self) -> String {
+        [self.cause().unwrap_or_default(), self.advice_text()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     /// Kurzfassung, Erklärung und Details, z. B. für Tooltips.
     pub fn full_text(&self) -> String {
         let mut text = self.summary.clone();
-        for part in [self.advice, Some(self.details.as_str())] {
-            if let Some(part) = part.filter(|p| !p.is_empty()) {
+        for part in [self.explanation().as_str(), self.details.as_str()] {
+            if !part.is_empty() {
                 text.push_str("\n\n");
                 text.push_str(part);
             }
@@ -512,7 +611,8 @@ impl Failure {
 /// Zeilen, die als Kurzfassung nichts taugen: Pfade und Überleitungen wie
 /// „Das Installationsprotokoll ist verfügbar unter:“.
 fn is_noise(line: &str) -> bool {
-    line.ends_with(':') || line.contains(":\\") || line.starts_with("\\\\")
+    // „: /…“ nur im Demo-Modus unter Linux.
+    line.ends_with(':') || line.contains(":\\") || line.starts_with("\\\\") || line.contains(": /")
 }
 
 /// Exitcode des Installers aus Zeilen wie „Installation fehlgeschlagen mit
@@ -529,13 +629,15 @@ fn installer_exit_code(lines: &[&str]) -> Option<i32> {
 
 /// Protokolldatei des Installers aus „… verfügbar unter: C:\…\x.log“ bzw.
 /// einer eigenen Zeile mit dem Pfad.
-fn installer_log(lines: &[&str]) -> Option<PathBuf> {
+fn installer_log_path(lines: &[&str]) -> Option<PathBuf> {
     lines.iter().rev().find_map(|line| {
         let path = line
             .rsplit_once(": ")
             .map_or(*line, |(_, path)| path)
             .trim();
-        (path.to_lowercase().ends_with(".log") && path.contains(":\\")).then(|| PathBuf::from(path))
+        // Unter Windows immer mit Laufwerk; „/…“ nur im Demo-Modus unter Linux.
+        let absolute = path.contains(":\\") || path.starts_with('/');
+        (path.to_lowercase().ends_with(".log") && absolute).then(|| PathBuf::from(path))
     })
 }
 
@@ -548,15 +650,12 @@ pub fn describe_installer_code(code: i32) -> Option<(&'static str, &'static str)
                 "allgemeiner Installationsfehler",
                 "general installation error"
             ),
+            // Wo die genaue Ursache steht, ergänzt Failure::advice_text.
             tr!(
                 "Häufig läuft das Programm noch – auch im Infobereich neben der Uhr. Programm \
-                 vollständig beenden und erneut versuchen. Die genaue Ursache steht im \
-                 Installationsprotokoll: nach „Return value 3“ bzw. „Rückgabewert 3“ suchen, die \
-                 Zeilen davor nennen den fehlgeschlagenen Schritt.",
+                 vollständig beenden und erneut versuchen.",
                 "Often the program is still running – possibly in the system tray next to the \
-                 clock. Quit the program completely and try again. The exact cause is in the \
-                 installer log: search for “Return value 3”; the lines before it show which step \
-                 failed."
+                 clock. Quit the program completely and try again."
             ),
         ),
         1618 => (
@@ -705,6 +804,10 @@ pub fn describe_code(code: u32) -> Option<&'static str> {
             "the UAC prompt was declined"
         ),
         PACKAGE_IS_PINNED => tr!("das Paket ist angeheftet", "the package is pinned"),
+        UPGRADE_INSTALL_TECH_MISMATCH => tr!(
+            "die neue Version wird anders installiert – deinstallieren und neu installieren",
+            "the new version uses a different installer type – uninstall and reinstall"
+        ),
         INSTALLER_PROHIBITS_ELEVATION => {
             tr!(
                 "der Installer lässt sich nicht mit Administratorrechten ausführen – \
@@ -844,7 +947,7 @@ mod tests {
         );
         assert!(failure.advice.unwrap().contains("Programm"));
         assert_eq!(
-            failure.log_path.as_deref(),
+            failure.log_path(),
             Some(std::path::Path::new(
                 r"C:\Users\x\AppData\Local\Temp\EpicGames.log"
             ))
@@ -862,9 +965,72 @@ mod tests {
         assert_eq!(failure.installer_code, Some(740));
         assert!(failure.needs_admin);
         assert_eq!(
-            failure.log_path.as_deref(),
+            failure.log_path(),
             Some(std::path::Path::new(r"C:\Temp\setup.log"))
         );
+    }
+
+    fn with_cause(cause: install_log::LogCause) -> Option<Box<InstallerLog>> {
+        Some(Box::new(InstallerLog {
+            path: PathBuf::from(r"C:\Temp\install.log"),
+            cause: Some(cause),
+        }))
+    }
+
+    #[test]
+    fn installer_log_cause_replaces_the_general_guess() {
+        let mut failure = Failure {
+            installer_code: Some(1603),
+            advice: describe_installer_code(1603).map(|(_, advice)| advice),
+            ..Failure::new("Installation fehlgeschlagen mit Exitcode: 1603")
+        };
+        // Ohne Protokoll: Vermutung und wo die genaue Ursache steht.
+        let text = failure.explanation();
+        assert!(text.contains("Häufig läuft das Programm noch"));
+        assert!(text.contains("Return value 3"));
+
+        // Meldung aus dem Protokoll ohne bekannten Fehler: Sie spricht für sich.
+        failure.installer_log = with_cause(install_log::LogCause {
+            message: Some("This app is already installed for everyone.".into()),
+            error: None,
+            action: Some("LaunchConditions".into()),
+        });
+        assert_eq!(
+            failure.explanation(),
+            "Laut Installationsprotokoll: This app is already installed for everyone. \
+             (Schritt: Prüfen der Voraussetzungen)"
+        );
+        assert!(
+            failure
+                .full_text()
+                .contains("already installed for everyone")
+        );
+
+        // Bekannter Windows-Installer-Fehler: passender Rat statt Vermutung.
+        failure.installer_log = with_cause(install_log::LogCause {
+            message: Some("Fehler 1714. Die ältere Version kann nicht entfernt werden.".into()),
+            error: Some(1714),
+            action: None,
+        });
+        let text = failure.explanation();
+        assert!(text.contains("Programm erst deinstallieren"));
+        assert!(!text.contains("Häufig läuft das Programm noch"));
+    }
+
+    #[test]
+    fn different_installer_technology_suggests_reinstall_or_pin() {
+        let out = CommandOutput {
+            lines: vec![
+                "Es wurde eine neuere Version gefunden, die Installationstechnologie unterscheidet \
+                 sich jedoch von der aktuellen installierten Version."
+                    .into(),
+            ],
+            exit_code: Some(UPGRADE_INSTALL_TECH_MISMATCH as i32),
+        };
+        let failure = Failure::from_output(&out);
+        assert!(failure.suggest_pin);
+        assert!(failure.summary.contains("anders installiert"));
+        assert!(failure.advice.unwrap().contains("deinstallieren"));
     }
 
     #[test]

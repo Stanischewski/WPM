@@ -25,6 +25,7 @@ use crate::settings::Settings;
 use crate::system;
 use crate::tray::{self, Command, CommandSender, Tray};
 use crate::winget::demo::DemoRunner;
+use crate::winget::install_log::LogCause;
 use crate::winget::parse;
 use crate::winget::{
     Details, Failure, Options, Package, Pin, Request, Response, Source, UpgradeList,
@@ -96,14 +97,14 @@ struct Notice {
     expanded: bool,
     /// Knopf „Als Administrator neu starten“ anbieten.
     admin_hint: bool,
-    /// Fehlgeschlagenes Update, das nach dem Neustart erneut versucht wird.
-    retry: Option<Package>,
+    /// Fehlgeschlagene Updates, die nach dem Neustart erneut versucht werden.
+    retry: Vec<Package>,
     /// Erklärung, was man tun kann (immer sichtbar, unter dem Titel).
     advice: String,
-    /// Protokolldatei des Installers.
-    log_path: Option<std::path::PathBuf>,
-    /// Paket, dessen Anheften angeboten wird.
-    pin: Option<Package>,
+    /// Fehlgeschlagene Aufträge: einer oder mehrere gleichartige (siehe `group`).
+    failures: Vec<FailedItem>,
+    /// Woran gleichartige Fehler erkannt werden, die in diese Meldung kommen.
+    group: Option<FailureGroup>,
     /// Bleibt stehen, bis sie geschlossen wird (Anleitungen).
     persistent: bool,
     created: Instant,
@@ -117,12 +118,108 @@ impl Notice {
             details: String::new(),
             expanded: false,
             admin_hint: false,
-            retry: None,
+            retry: Vec::new(),
             advice: String::new(),
-            log_path: None,
-            pin: None,
+            failures: Vec::new(),
+            group: None,
             persistent: false,
             created: Instant::now(),
+        }
+    }
+
+    /// Titel, Erklärung und Details einer Fehlermeldung aus ihren Aufträgen.
+    fn refresh_failures(&mut self) {
+        match self.failures.as_slice() {
+            [] => {}
+            [item] => {
+                self.title = trf!(
+                    "{} fehlgeschlagen: {}",
+                    "{} failed: {}",
+                    item.label,
+                    item.summary
+                );
+                let cause = item.log_cause.as_ref().and_then(LogCause::describe);
+                self.advice = [cause.unwrap_or_default(), item.advice.clone()]
+                    .into_iter()
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                self.details = item.details.clone();
+            }
+            items => {
+                let first = &items[0];
+                self.title = match &self.group {
+                    Some(group) => group.action.failed_title(items.len(), &first.summary),
+                    None => first.summary.clone(),
+                };
+                // Die Ursachen stehen je Paket in der Liste darunter.
+                self.advice = first.advice.clone();
+                self.details = items
+                    .iter()
+                    .map(|item| format!("{}:\n{}", item.name, item.details))
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+            }
+        }
+    }
+}
+
+/// Ein fehlgeschlagener Auftrag in einer Fehlermeldung.
+struct FailedItem {
+    /// Bezeichnung des Auftrags, z. B. „PdfCraft aktualisieren“.
+    label: String,
+    /// Name des Pakets für die Liste einer zusammengefassten Meldung.
+    name: String,
+    summary: String,
+    /// Ursache laut Installationsprotokoll.
+    log_cause: Option<LogCause>,
+    advice: String,
+    details: String,
+    log_path: Option<std::path::PathBuf>,
+    /// Anheften anbieten (die neue Version passt nicht zu dieser Installation).
+    pin: Option<Package>,
+}
+
+/// Gleiche Art von Auftrag, gleiche Kurzfassung und gleicher Fehler laut
+/// Installationsprotokoll: Solche Fehler stehen in einer gemeinsamen Meldung.
+#[derive(PartialEq, Eq)]
+struct FailureGroup {
+    action: PackageAction,
+    summary: String,
+    cause_error: Option<u32>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PackageAction {
+    Install,
+    Upgrade,
+    Uninstall,
+}
+
+impl PackageAction {
+    fn of(request: &Request) -> Option<Self> {
+        match request {
+            Request::Install { .. } => Some(Self::Install),
+            Request::Upgrade { .. } => Some(Self::Upgrade),
+            Request::Uninstall { .. } => Some(Self::Uninstall),
+            _ => None,
+        }
+    }
+
+    fn failed_title(self, count: usize, summary: &str) -> String {
+        match self {
+            Self::Install => trf!(
+                "{count} Installationen fehlgeschlagen: {summary}",
+                "{count} installations failed: {summary}"
+            ),
+            Self::Upgrade => trf!(
+                "{count} Updates fehlgeschlagen: {summary}",
+                "{count} updates failed: {summary}"
+            ),
+            Self::Uninstall => trf!(
+                "{count} Deinstallationen fehlgeschlagen: {summary}",
+                "{count} uninstallations failed: {summary}"
+            ),
         }
     }
 }
@@ -428,27 +525,7 @@ impl WpmApp {
     }
 
     fn notice_failure(&mut self, request: &Request, failure: &Failure) {
-        let upgrade = match request {
-            Request::Upgrade { package } => Some(package.clone()),
-            _ => None,
-        };
-        self.notices.push(Notice {
-            details: failure.details.clone(),
-            admin_hint: failure.needs_admin,
-            retry: upgrade.clone().filter(|_| failure.needs_admin),
-            advice: failure.advice.unwrap_or_default().to_string(),
-            log_path: failure.log_path.clone(),
-            pin: upgrade.filter(|_| failure.suggest_pin),
-            ..Notice::new(
-                NoticeKind::Error,
-                trf!(
-                    "{} fehlgeschlagen: {}",
-                    "{} failed: {}",
-                    request.label(),
-                    failure.summary
-                ),
-            )
-        });
+        add_failure_notice(&mut self.notices, request, failure);
     }
 
     /// Updates mit Adminrechten installieren, aber WPM läuft noch ohne?
@@ -1416,7 +1493,8 @@ impl WpmApp {
         let can_restart = self.can_restart_elevated();
         let mut dismissed = None;
         let mut restart: Option<Vec<String>> = None;
-        let mut pin: Option<Package> = None;
+        // Meldung, Eintrag darin und Paket, das angeheftet werden soll.
+        let mut pin: Option<(usize, usize, Package)> = None;
         let mut open_log: Option<std::path::PathBuf> = None;
         for (index, notice) in self.notices.iter_mut().enumerate() {
             let (icon, color) = match notice.kind {
@@ -1443,27 +1521,18 @@ impl WpmApp {
                             {
                                 dismissed = Some(index);
                             }
-                            if let Some(package) = &notice.pin
-                                && ui
-                                    .small_button(tr!("📌 Anheften", "📌 Pin"))
-                                    .on_hover_text(tr!(
-                                        "Dieses Update künftig überspringen (winget pin). \
-                                         Lässt sich unter „Angeheftete Pakete“ wieder lösen.",
-                                        "Skip this update from now on (winget pin). \
-                                         You can unpin it again under “Pinned packages”."
-                                    ))
-                                    .clicked()
-                            {
-                                pin = Some(package.clone());
-                                dismissed = Some(index);
-                            }
-                            if let Some(path) = notice.log_path.as_ref().filter(|p| p.is_file())
-                                && ui
-                                    .small_button(tr!("📄 Protokoll öffnen", "📄 Open log"))
-                                    .on_hover_text(path.display().to_string())
-                                    .clicked()
-                            {
-                                open_log = Some(path.clone());
+                            // Bei nur einem Paket stehen seine Knöpfe hier, sonst je Zeile.
+                            if let [item] = notice.failures.as_slice() {
+                                if let Some(package) = &item.pin
+                                    && pin_button(ui)
+                                {
+                                    pin = Some((index, 0, package.clone()));
+                                }
+                                if let Some(path) = &item.log_path
+                                    && log_button(ui, path)
+                                {
+                                    open_log = Some(path.clone());
+                                }
                             }
                             if !notice.details.is_empty() {
                                 let label = if notice.expanded {
@@ -1475,7 +1544,7 @@ impl WpmApp {
                                     notice.expanded = !notice.expanded;
                                 }
                             }
-                            let admin_label = if notice.retry.is_some() {
+                            let admin_label = if !notice.retry.is_empty() {
                                 tr!(
                                     "🛡 Mit Adminrechten erneut versuchen",
                                     "🛡 Retry with admin rights"
@@ -1517,6 +1586,56 @@ impl WpmApp {
                             );
                         });
                     });
+                    if notice.failures.len() > 1 {
+                        if notice.failures.iter().any(|item| item.log_cause.is_some()) {
+                            ui.label(
+                                RichText::new(tr!(
+                                    "Ursache laut Installationsprotokoll:",
+                                    "Cause according to the installer log:"
+                                ))
+                                .weak(),
+                            );
+                        }
+                        for (item_index, item) in notice.failures.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::TOP),
+                                    |ui| {
+                                        if let Some(package) = &item.pin
+                                            && pin_button(ui)
+                                        {
+                                            pin = Some((index, item_index, package.clone()));
+                                        }
+                                        if let Some(path) = &item.log_path
+                                            && log_button(ui, path)
+                                        {
+                                            open_log = Some(path.clone());
+                                        }
+                                        ui.with_layout(
+                                            egui::Layout::left_to_right(egui::Align::TOP)
+                                                .with_main_wrap(true),
+                                            |ui| {
+                                                ui.label(
+                                                    RichText::new(format!("• {}", item.name))
+                                                        .strong(),
+                                                );
+                                                if let Some(cause) =
+                                                    item.log_cause.as_ref().and_then(LogCause::short)
+                                                {
+                                                    ui.add(
+                                                        egui::Label::new(
+                                                            RichText::new(cause).weak(),
+                                                        )
+                                                        .wrap(),
+                                                    );
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
+                            });
+                        }
+                    }
                     if !notice.advice.is_empty() {
                         ui.add(egui::Label::new(RichText::new(&notice.advice).weak()).wrap());
                     }
@@ -1529,14 +1648,23 @@ impl WpmApp {
                     }
                 });
         }
-        if let Some(index) = dismissed {
+        if let Some((index, item_index, package)) = pin {
+            // Angeheftet: Das Paket verschwindet aus der Meldung, die leere
+            // Meldung ganz.
+            let notice = &mut self.notices[index];
+            notice.failures.remove(item_index);
+            notice.retry.retain(|p| p.id != package.id);
+            if notice.failures.is_empty() {
+                self.notices.remove(index);
+            } else {
+                notice.refresh_failures();
+            }
+            self.apply(Action::Pin(package));
+        } else if let Some(index) = dismissed {
             self.notices.remove(index);
         }
         if let Some(upgrade_ids) = restart {
             self.restart_elevated(ui.ctx(), &upgrade_ids);
-        }
-        if let Some(package) = pin {
-            self.apply(Action::Pin(package));
         }
         if let Some(path) = open_log
             && let Err(e) = system::open_log_file(&path)
@@ -1813,6 +1941,86 @@ fn summarize(items: &[&str]) -> String {
     text
 }
 
+/// Meldet einen Fehler. Schlagen mehrere Pakete auf dieselbe Weise fehl
+/// (z. B. Updates einer Programmfamilie mit Code 1603), entsteht daraus eine
+/// gemeinsame Meldung mit einer Zeile je Paket. Scheitert dasselbe Paket
+/// erneut, ersetzt die neue Zeile die alte.
+fn add_failure_notice(notices: &mut Vec<Notice>, request: &Request, failure: &Failure) {
+    let upgrade = match request {
+        Request::Upgrade { package } => Some(package.clone()),
+        _ => None,
+    };
+    let name = match request {
+        Request::Install { package }
+        | Request::Upgrade { package }
+        | Request::Uninstall { package } => package.name.clone(),
+        _ => request.label(),
+    };
+    let item = FailedItem {
+        label: request.label(),
+        name,
+        summary: failure.summary.clone(),
+        log_cause: failure.log_cause().cloned(),
+        advice: failure.advice_text(),
+        details: failure.details.clone(),
+        log_path: failure.log_path().map(std::path::Path::to_path_buf),
+        pin: upgrade.clone().filter(|_| failure.suggest_pin),
+    };
+    let retry = upgrade.filter(|_| failure.needs_admin);
+    let group = PackageAction::of(request).map(|action| FailureGroup {
+        action,
+        summary: failure.summary.clone(),
+        cause_error: failure.log_cause().and_then(|cause| cause.error),
+    });
+    if let Some(group) = &group
+        && let Some(notice) = notices
+            .iter_mut()
+            .find(|notice| notice.group.as_ref() == Some(group))
+    {
+        notice
+            .failures
+            .retain(|existing| existing.label != item.label);
+        notice.failures.push(item);
+        if let Some(package) = retry {
+            notice.retry.retain(|p| p.id != package.id);
+            notice.retry.push(package);
+        }
+        notice.admin_hint |= failure.needs_admin;
+        notice.refresh_failures();
+        return;
+    }
+    let mut notice = Notice {
+        admin_hint: failure.needs_admin,
+        retry: retry.into_iter().collect(),
+        failures: vec![item],
+        group,
+        ..Notice::new(NoticeKind::Error, String::new())
+    };
+    notice.refresh_failures();
+    notices.push(notice);
+}
+
+/// Knopf „Anheften“ in einer Fehlermeldung.
+fn pin_button(ui: &mut egui::Ui) -> bool {
+    ui.small_button(tr!("📌 Anheften", "📌 Pin"))
+        .on_hover_text(tr!(
+            "Dieses Update künftig überspringen (winget pin). \
+             Lässt sich unter „Angeheftete Pakete“ wieder lösen.",
+            "Skip this update from now on (winget pin). \
+             You can unpin it again under “Pinned packages”."
+        ))
+        .clicked()
+}
+
+/// Knopf „Protokoll öffnen“ in einer Fehlermeldung, sofern die Datei existiert.
+fn log_button(ui: &mut egui::Ui, path: &std::path::Path) -> bool {
+    path.is_file()
+        && ui
+            .small_button(tr!("📄 Protokoll öffnen", "📄 Open log"))
+            .on_hover_text(path.display().to_string())
+            .clicked()
+}
+
 fn setup_style(ctx: &egui::Context) {
     use egui::{FontFamily, FontId, TextStyle};
     ctx.all_styles_mut(|style| {
@@ -1845,6 +2053,7 @@ fn setup_style(ctx: &egui::Context) {
 mod tests {
     use super::*;
     use crate::i18n::Lang;
+    use crate::winget::InstallerLog;
 
     #[test]
     fn background_result_text_in_both_languages() {
@@ -1864,6 +2073,87 @@ mod tests {
                 background_result_text(&request, &ok),
                 Some(("Firefox updated".to_string(), true))
             );
+        });
+    }
+
+    fn upgrade(name: &str) -> Request {
+        Request::Upgrade {
+            package: Package {
+                name: name.into(),
+                id: format!("ArtCraft.{name}"),
+                source: "winget".into(),
+                ..Package::default()
+            },
+        }
+    }
+
+    fn msi_failure(error: Option<u32>) -> Failure {
+        Failure {
+            installer_code: Some(1603),
+            installer_log: Some(Box::new(InstallerLog {
+                path: r"C:\Temp\install.log".into(),
+                cause: Some(LogCause {
+                    message: Some("This app is already installed for everyone.".into()),
+                    error,
+                    action: Some("LaunchConditions".into()),
+                }),
+            })),
+            ..Failure::new("Installation fehlgeschlagen mit Exitcode: 1603")
+        }
+    }
+
+    #[test]
+    fn same_failures_are_combined_into_one_notice() {
+        let mut notices = Vec::new();
+        add_failure_notice(&mut notices, &upgrade("PdfCraft"), &msi_failure(None));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(
+            notices[0].title,
+            "PdfCraft aktualisieren fehlgeschlagen: Installation fehlgeschlagen mit Exitcode: 1603"
+        );
+        // Einzeln: Ursache aus dem Protokoll unter dem Titel.
+        assert!(
+            notices[0]
+                .advice
+                .starts_with("Laut Installationsprotokoll: This app is already installed")
+        );
+
+        add_failure_notice(&mut notices, &upgrade("PhotoCraft"), &msi_failure(None));
+        add_failure_notice(&mut notices, &upgrade("WordCraft"), &msi_failure(None));
+        assert_eq!(notices.len(), 1);
+        assert_eq!(notices[0].failures.len(), 3);
+        assert_eq!(
+            notices[0].title,
+            "3 Updates fehlgeschlagen: Installation fehlgeschlagen mit Exitcode: 1603"
+        );
+        assert!(notices[0].details.contains("PhotoCraft:"));
+
+        // Dasselbe Paket scheitert erneut: keine doppelte Zeile.
+        add_failure_notice(&mut notices, &upgrade("PdfCraft"), &msi_failure(None));
+        assert_eq!(notices[0].failures.len(), 3);
+        assert_eq!(notices[0].failures[2].name, "PdfCraft");
+
+        // Anderer Fehler laut Protokoll, andere Auftragsart oder andere
+        // Kurzfassung: eigene Meldungen.
+        add_failure_notice(&mut notices, &upgrade("CadCraft"), &msi_failure(Some(1714)));
+        let install = Request::Install {
+            package: Package {
+                name: "FilmCraft".into(),
+                ..Package::default()
+            },
+        };
+        add_failure_notice(&mut notices, &install, &msi_failure(None));
+        add_failure_notice(
+            &mut notices,
+            &upgrade("FAF Client"),
+            &Failure::new("die neue Version wird anders installiert"),
+        );
+        assert_eq!(notices.len(), 4);
+        i18n::with(Lang::En, || {
+            let mut notices = Vec::new();
+            add_failure_notice(&mut notices, &upgrade("A"), &msi_failure(None));
+            add_failure_notice(&mut notices, &upgrade("B"), &msi_failure(None));
+            assert!(notices[0].title.starts_with("2 updates failed: "));
         });
     }
 }
