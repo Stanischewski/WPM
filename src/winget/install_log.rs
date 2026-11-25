@@ -124,8 +124,41 @@ fn decode(bytes: &[u8]) -> String {
         .count();
     match std::str::from_utf8(&bytes[start..]) {
         Ok(text) => text.to_owned(),
-        Err(_) => windows_1252(bytes),
+        Err(_) => ansi(bytes),
     }
+}
+
+/// ANSI-Codepage des Systems (unter deutschem Windows Windows-1252, unter
+/// polnischem 1250 usw.).
+#[cfg(windows)]
+fn ansi(bytes: &[u8]) -> String {
+    use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+    let Ok(len) = i32::try_from(bytes.len()) else {
+        return windows_1252(bytes);
+    };
+    if len == 0 {
+        return String::new();
+    }
+    // SAFETY: Erst die nötige Länge erfragen, dann in einen Puffer genau dieser
+    // Länge schreiben; beide Zeiger gelten für die angegebene Länge.
+    let needed =
+        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, std::ptr::null_mut(), 0) };
+    if needed <= 0 {
+        return windows_1252(bytes);
+    }
+    let mut wide = vec![0u16; needed as usize];
+    // SAFETY: siehe oben.
+    let written =
+        unsafe { MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), len, wide.as_mut_ptr(), needed) };
+    if written <= 0 {
+        return windows_1252(bytes);
+    }
+    String::from_utf16_lossy(&wide[..written as usize])
+}
+
+#[cfg(not(windows))]
+fn ansi(bytes: &[u8]) -> String {
+    windows_1252(bytes)
 }
 
 fn utf16le(bytes: &[u8]) -> String {
@@ -160,26 +193,32 @@ pub fn analyze(text: &str) -> Option<LogCause> {
     }
     let lines: Vec<&str> = text.lines().map(str::trim).collect();
     let failed = lines.iter().position(|line| is_failed_action(line));
-    let before = match failed {
-        Some(index) => &lines[index.saturating_sub(LOOKBACK)..index],
-        None => &lines[..],
+    let failed_action = failed.and_then(|index| action_name(lines[index]));
+    // Nach dem eigentlichen Fehler folgen oft Meldungen vom Zurückrollen
+    // (Rollback). Deshalb vom Start des fehlgeschlagenen Schritts an
+    // vorwärts suchen: Die erste Meldung ist die Ursache.
+    let scope = match (failed, &failed_action) {
+        (Some(index), Some(action)) => action_start(&lines[..index], action)
+            .map(|start| &lines[start..index])
+            .unwrap_or(&lines[index.saturating_sub(LOOKBACK)..index]),
+        (Some(index), None) => &lines[index.saturating_sub(LOOKBACK)..index],
+        (None, _) => &lines[..],
     };
-    let found = before
-        .iter()
-        .rev()
-        .find_map(|line| message(line))
-        .or_else(|| {
-            // Steht vor dem Schritt nichts, irgendwo im Protokoll suchen.
-            failed.and_then(|_| lines.iter().rev().find_map(|line| message(line)))
-        });
-    // Eine benutzerdefinierte Aktion ist genauer als der Schritt, in dem sie lief
-    // (meist InstallFinalize).
-    let custom_action = before.iter().rev().find_map(|line| {
+    let scoped = scope.iter().find_map(|line| message(line));
+    // Steht im Schritt nichts, davor suchen (nie danach: Dort kommen nur
+    // noch Rollback- und Abschlussmeldungen).
+    let found = scoped.or_else(|| {
+        let before = &lines[..failed.unwrap_or(lines.len())];
+        before.iter().rev().find_map(|line| message(line))
+    });
+    // Eine benutzerdefinierte Aktion ist genauer als der Schritt, in dem sie
+    // lief (meist InstallFinalize) – die erste, die darin scheiterte.
+    let custom_action = scope.iter().find_map(|line| {
         let rest = line.strip_prefix("CustomAction ")?;
         let (name, _) = rest.split_once(" returned actual error code ")?;
         Some(name.trim().to_string())
     });
-    let action = custom_action.or_else(|| failed.and_then(|index| action_name(lines[index])));
+    let action = custom_action.or(failed_action);
     let (message, error) = match found {
         Some((message, error)) => (Some(message), error),
         None => (None, None),
@@ -191,6 +230,16 @@ pub fn analyze(text: &str) -> Option<LogCause> {
         message,
         error,
         action,
+    })
+}
+
+/// Zeile, mit der `action` begann: „Action start 21:41:24: LaunchConditions.“
+/// bzw. „Aktion gestartet um 21:41:24: LaunchConditions.“ (die letzte vor dem Ende).
+fn action_start(lines: &[&str], action: &str) -> Option<usize> {
+    let ending = format!(": {action}.");
+    lines.iter().rposition(|line| {
+        (line.starts_with("Action start") || line.starts_with("Aktion gestartet"))
+            && line.ends_with(&ending)
     })
 }
 
@@ -217,7 +266,15 @@ fn message(line: &str) -> Option<(String, Option<u32>)> {
         let rest = rest
             .strip_prefix("Product: ")
             .or_else(|| rest.strip_prefix("Produkt: "))?;
-        rest.split_once(" -- ")?.1.trim()
+        let text = rest.split_once(" -- ")?.1.trim();
+        // Warnungen und Hinweise (z. B. „Warning 1909.“) sind keine Ursache.
+        if ["Warning ", "Warnung ", "Info "]
+            .iter()
+            .any(|prefix| text.starts_with(prefix))
+        {
+            return None;
+        }
+        text
     } else if error_code(line).is_some() {
         line
     } else {
@@ -247,15 +304,31 @@ fn error_code(text: &str) -> Option<u32> {
 }
 
 /// Abschlussmeldungen ohne Ursache, z. B. „Installation failed.“
+/// Nur die ganze Meldung zählt: „Installation failed: .NET 8 is required“
+/// eines Herstellers ist dagegen eine Ursache.
 fn is_status(text: &str) -> bool {
-    let lower = text.to_lowercase();
-    lower.contains("completed successfully")
-        || lower.contains("erfolgreich")
-        || lower.starts_with("installation failed")
-        || lower.starts_with("installation operation failed")
-        || lower.starts_with("removal failed")
-        || lower.starts_with("installation fehlgeschlagen")
-        || lower.starts_with("die installation ist fehlgeschlagen")
+    const ENGLISH: [&str; 11] = [
+        "installation completed successfully",
+        "installation operation completed successfully",
+        "installation failed",
+        "installation operation failed",
+        "removal completed successfully",
+        "removal failed",
+        "configuration completed successfully",
+        "configuration failed",
+        "advertisement completed successfully",
+        "advertisement failed",
+        "reconfiguration completed successfully",
+    ];
+    let lower = text.trim_end_matches('.').trim().to_lowercase();
+    ENGLISH.contains(&lower.as_str())
+        // Deutsche Fassungen, z. B. „Installation erfolgreich abgeschlossen.“
+        // oder „Fehler bei der Installation.“
+        || (lower.chars().count() <= 60
+            && (lower.contains("erfolgreich abgeschlossen")
+                || lower.ends_with("fehlgeschlagen")
+                || lower.starts_with("fehler bei der")
+                || lower.starts_with("fehler beim")))
 }
 
 fn shorten(text: &str) -> String {
@@ -304,7 +377,7 @@ pub fn advice(error: u32) -> Option<&'static str> {
             "The old version cannot be removed, usually because its installation package is \
              missing. Uninstall the program first, then install it again."
         ),
-        1303 | 1304 | 1310 | 1306 => tr!(
+        1304 | 1310 | 1306 => tr!(
             "Eine Datei ließ sich nicht schreiben – meist läuft das Programm noch. Programm \
              vollständig beenden (auch im Infobereich neben der Uhr) und erneut versuchen.",
             "A file could not be written – usually the program is still running. Quit the \
@@ -334,7 +407,7 @@ pub fn advice(error: u32) -> Option<&'static str> {
             "Another installation is in progress (e.g. Windows Update). Wait a moment and try \
              again."
         ),
-        1925 | 1730 => tr!(
+        1303 | 1925 | 1730 => tr!(
             "Dafür sind Administratorrechte nötig.",
             "This requires administrator rights."
         ),
@@ -438,6 +511,43 @@ Action ended 10:00:05: InstallFinalize. Return value 3.
         assert_eq!(cause.action.as_deref(), Some("CA_RegisterService"));
         assert_eq!(cause.error, Some(1722));
         assert!(advice(1722).is_some());
+    }
+
+    #[test]
+    fn rollback_messages_do_not_hide_the_real_cause() {
+        let log = "\
+Action start 10:00:00: InstallFinalize.
+MSI (s) (A0:B4) [10:00:01:000]: Product: Demo -- Error 1001. Exception occurred while initializing the installation: System.IO.FileNotFoundException: demo.dll
+CustomAction CA_Install returned actual error code 1603 (note this may not be 100% accurate if translation happened inside sandbox)
+Rollback: Installing service
+MSI (s) (A0:B4) [10:00:02:000]: Product: Demo -- Error 1001. An exception occurred during the Rollback phase of the installation. This exception will be ignored.
+CustomAction CA_Rollback returned actual error code 1603 (note this may not be 100% accurate if translation happened inside sandbox)
+Action ended 10:00:03: InstallFinalize. Return value 3.
+MSI (s) (A0:B4) [10:00:03:000]: Product: Demo -- Configuration failed.
+";
+        let cause = analyze(log).unwrap();
+        assert!(cause.message.unwrap().contains("FileNotFoundException"));
+        assert_eq!(cause.action.as_deref(), Some("CA_Install"));
+    }
+
+    #[test]
+    fn vendor_texts_are_kept_but_status_and_warnings_are_not() {
+        let log = "\
+Action start 10:00:00: LaunchConditions.
+MSI (s) (A0:B4) [10:00:00:100]: Product: Demo -- Warning 1909. Could not create shortcut Demo.lnk.
+MSI (s) (A0:B4) [10:00:00:200]: Product: Demo -- Installation failed: .NET Desktop Runtime 8 is required.
+Action ended 10:00:00: LaunchConditions. Return value 3.
+";
+        assert_eq!(
+            analyze(log).unwrap().message.as_deref(),
+            Some("Installation failed: .NET Desktop Runtime 8 is required.")
+        );
+        assert!(is_status("Configuration failed."));
+        assert!(is_status("Installation erfolgreich abgeschlossen."));
+        assert!(!is_status(
+            "Das Update war nicht erfolgreich: Bitte zuerst Demo 1.x deinstallieren."
+        ));
+        assert_eq!(advice(1303), advice(1730));
     }
 
     #[test]

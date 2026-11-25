@@ -531,7 +531,7 @@ impl Failure {
         log.cause = install_log::read(&log.path);
         if self
             .log_cause()
-            .is_some_and(|cause| matches!(cause.error, Some(1925 | 1730)))
+            .is_some_and(|cause| matches!(cause.error, Some(1303 | 1925 | 1730)))
             && !matches!(
                 self.code,
                 Some(INSTALLER_PROHIBITS_ELEVATION | ADMIN_CONTEXT_ACTION_PROHIBITED)
