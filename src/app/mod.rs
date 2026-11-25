@@ -129,6 +129,7 @@ impl Notice {
 
     /// Titel, Erklärung und Details einer Fehlermeldung aus ihren Aufträgen.
     fn refresh_failures(&mut self) {
+        self.admin_hint = self.failures.iter().any(|item| item.needs_admin);
         match self.failures.as_slice() {
             [] => {}
             [item] => {
@@ -166,6 +167,8 @@ impl Notice {
 
 /// Ein fehlgeschlagener Auftrag in einer Fehlermeldung.
 struct FailedItem {
+    /// Paket-ID, um spätere Ergebnisse desselben Pakets zuzuordnen.
+    id: Option<String>,
     /// Bezeichnung des Auftrags, z. B. „PdfCraft aktualisieren“.
     label: String,
     /// Name des Pakets für die Liste einer zusammengefassten Meldung.
@@ -178,15 +181,18 @@ struct FailedItem {
     log_path: Option<std::path::PathBuf>,
     /// Anheften anbieten (die neue Version passt nicht zu dieser Installation).
     pin: Option<Package>,
+    /// Mit Administratorrechten würde es vermutlich klappen.
+    needs_admin: bool,
 }
 
-/// Gleiche Art von Auftrag, gleiche Kurzfassung und gleicher Fehler laut
-/// Installationsprotokoll: Solche Fehler stehen in einer gemeinsamen Meldung.
+/// Gleiche Art von Auftrag, gleiche Kurzfassung und gleicher Rat: Solche
+/// Fehler stehen in einer gemeinsamen Meldung (die Ursachen je Paket in
+/// eigenen Zeilen).
 #[derive(PartialEq, Eq)]
 struct FailureGroup {
     action: PackageAction,
     summary: String,
-    cause_error: Option<u32>,
+    advice: String,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1011,6 +1017,7 @@ impl WpmApp {
                 self.search_results = Some(results);
             }
             (Request::Install { package }, Ok(_)) => {
+                forget_failures(&mut self.notices, &package.id);
                 self.notice(
                     NoticeKind::Success,
                     trf!(
@@ -1021,6 +1028,7 @@ impl WpmApp {
                 );
             }
             (Request::Upgrade { package }, Ok(_)) => {
+                forget_failures(&mut self.notices, &package.id);
                 self.recently_upgraded
                     .insert(package.id.clone(), package.available.clone());
                 if let Some(list) = &mut self.updates {
@@ -1038,6 +1046,7 @@ impl WpmApp {
                 );
             }
             (Request::Uninstall { package }, Ok(_)) => {
+                forget_failures(&mut self.notices, &package.id);
                 if let Some(installed) = &mut self.installed {
                     installed.retain(|p| p.id != package.id);
                 }
@@ -1051,6 +1060,7 @@ impl WpmApp {
                 );
             }
             (Request::PinAdd { package }, Ok(_)) => {
+                forget_failures(&mut self.notices, &package.id);
                 if let Some(list) = &mut self.updates {
                     list.upgrades.retain(|p| p.id != package.id);
                     list.pinned.push(package.clone());
@@ -1493,8 +1503,7 @@ impl WpmApp {
         let can_restart = self.can_restart_elevated();
         let mut dismissed = None;
         let mut restart: Option<Vec<String>> = None;
-        // Meldung, Eintrag darin und Paket, das angeheftet werden soll.
-        let mut pin: Option<(usize, usize, Package)> = None;
+        let mut pin: Option<Package> = None;
         let mut open_log: Option<std::path::PathBuf> = None;
         for (index, notice) in self.notices.iter_mut().enumerate() {
             let (icon, color) = match notice.kind {
@@ -1526,7 +1535,7 @@ impl WpmApp {
                                 if let Some(package) = &item.pin
                                     && pin_button(ui)
                                 {
-                                    pin = Some((index, 0, package.clone()));
+                                    pin = Some(package.clone());
                                 }
                                 if let Some(path) = &item.log_path
                                     && log_button(ui, path)
@@ -1596,7 +1605,14 @@ impl WpmApp {
                                 .weak(),
                             );
                         }
-                        for (item_index, item) in notice.failures.iter().enumerate() {
+                        // Viele gleiche Fehler (z. B. ohne Internet) sollen das
+                        // Fenster nicht füllen: dann wird die Liste scrollbar.
+                        egui::ScrollArea::vertical()
+                            .id_salt(("failure_rows", index))
+                            .max_height(160.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                        for item in &notice.failures {
                             ui.horizontal(|ui| {
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::TOP),
@@ -1604,7 +1620,7 @@ impl WpmApp {
                                         if let Some(package) = &item.pin
                                             && pin_button(ui)
                                         {
-                                            pin = Some((index, item_index, package.clone()));
+                                            pin = Some(package.clone());
                                         }
                                         if let Some(path) = &item.log_path
                                             && log_button(ui, path)
@@ -1635,6 +1651,7 @@ impl WpmApp {
                                 );
                             });
                         }
+                            });
                     }
                     if !notice.advice.is_empty() {
                         ui.add(egui::Label::new(RichText::new(&notice.advice).weak()).wrap());
@@ -1648,17 +1665,9 @@ impl WpmApp {
                     }
                 });
         }
-        if let Some((index, item_index, package)) = pin {
-            // Angeheftet: Das Paket verschwindet aus der Meldung, die leere
-            // Meldung ganz.
-            let notice = &mut self.notices[index];
-            notice.failures.remove(item_index);
-            notice.retry.retain(|p| p.id != package.id);
-            if notice.failures.is_empty() {
-                self.notices.remove(index);
-            } else {
-                notice.refresh_failures();
-            }
+        if let Some(package) = pin {
+            // Angeheftet: Das Paket verschwindet aus den Meldungen.
+            forget_failures(&mut self.notices, &package.id);
             self.apply(Action::Pin(package));
         } else if let Some(index) = dismissed {
             self.notices.remove(index);
@@ -1956,7 +1965,13 @@ fn add_failure_notice(notices: &mut Vec<Notice>, request: &Request, failure: &Fa
         | Request::Uninstall { package } => package.name.clone(),
         _ => request.label(),
     };
+    let id = request.package_id().map(str::to_string);
+    // Eine ältere Zeile desselben Pakets ist überholt, auch in anderen Meldungen.
+    if let Some(id) = &id {
+        forget_failures(notices, id);
+    }
     let item = FailedItem {
+        id,
         label: request.label(),
         name,
         summary: failure.summary.clone(),
@@ -1965,39 +1980,55 @@ fn add_failure_notice(notices: &mut Vec<Notice>, request: &Request, failure: &Fa
         details: failure.details.clone(),
         log_path: failure.log_path().map(std::path::Path::to_path_buf),
         pin: upgrade.clone().filter(|_| failure.suggest_pin),
+        needs_admin: failure.needs_admin,
     };
     let retry = upgrade.filter(|_| failure.needs_admin);
     let group = PackageAction::of(request).map(|action| FailureGroup {
         action,
-        summary: failure.summary.clone(),
-        cause_error: failure.log_cause().and_then(|cause| cause.error),
+        summary: item.summary.clone(),
+        advice: item.advice.clone(),
     });
-    if let Some(group) = &group
-        && let Some(notice) = notices
-            .iter_mut()
-            .find(|notice| notice.group.as_ref() == Some(group))
-    {
-        notice
-            .failures
-            .retain(|existing| existing.label != item.label);
-        notice.failures.push(item);
-        if let Some(package) = retry {
-            notice.retry.retain(|p| p.id != package.id);
-            notice.retry.push(package);
-        }
-        notice.admin_hint |= failure.needs_admin;
-        notice.refresh_failures();
-        return;
-    }
-    let mut notice = Notice {
-        admin_hint: failure.needs_admin,
-        retry: retry.into_iter().collect(),
-        failures: vec![item],
-        group,
-        ..Notice::new(NoticeKind::Error, String::new())
+    // Eine wachsende Meldung rückt ans Ende, damit die Begrenzung auf drei
+    // Fehlermeldungen nicht ausgerechnet den neuesten Fehler entfernt.
+    let existing = group
+        .as_ref()
+        .and_then(|group| notices.iter().position(|n| n.group.as_ref() == Some(group)));
+    let mut notice = match existing {
+        Some(index) => notices.remove(index),
+        None => Notice {
+            group,
+            ..Notice::new(NoticeKind::Error, String::new())
+        },
     };
+    notice.failures.push(item);
+    notice.retry.extend(retry);
+    notice.created = Instant::now();
     notice.refresh_failures();
     notices.push(notice);
+}
+
+/// Entfernt die Zeilen eines Pakets aus allen Fehlermeldungen – es ist
+/// inzwischen erledigt, angeheftet oder erneut (anders) gescheitert. Leere
+/// Meldungen verschwinden.
+fn forget_failures(notices: &mut Vec<Notice>, id: &str) {
+    notices.retain_mut(|notice| {
+        if !notice
+            .failures
+            .iter()
+            .any(|item| item.id.as_deref() == Some(id))
+        {
+            return true;
+        }
+        notice
+            .failures
+            .retain(|item| item.id.as_deref() != Some(id));
+        notice.retry.retain(|package| package.id != id);
+        if notice.failures.is_empty() {
+            return false;
+        }
+        notice.refresh_failures();
+        true
+    });
 }
 
 /// Knopf „Anheften“ in einer Fehlermeldung.
@@ -2155,5 +2186,43 @@ mod tests {
             add_failure_notice(&mut notices, &upgrade("B"), &msi_failure(None));
             assert!(notices[0].title.starts_with("2 updates failed: "));
         });
+    }
+
+    #[test]
+    fn grouped_notices_stay_current() {
+        let mut notices = Vec::new();
+        add_failure_notice(&mut notices, &upgrade("PdfCraft"), &msi_failure(None));
+        add_failure_notice(
+            &mut notices,
+            &upgrade("Zoom"),
+            &Failure::new("Download fehlgeschlagen"),
+        );
+        // Ein neues Mitglied holt die Gruppe ans Ende (die Begrenzung auf drei
+        // Fehlermeldungen entfernt die vordersten).
+        add_failure_notice(&mut notices, &upgrade("WordCraft"), &msi_failure(None));
+        assert_eq!(notices.len(), 2);
+        assert_eq!(notices[1].failures.len(), 2);
+
+        // Gleiche Kurzfassung, aber ohne Ursache im Protokoll und damit mit
+        // anderem Rat: eigene Meldung, damit kein Rat verloren geht.
+        let no_log = Failure {
+            installer_code: Some(1603),
+            advice: crate::winget::describe_installer_code(1603).map(|(_, advice)| advice),
+            ..Failure::new("Installation fehlgeschlagen mit Exitcode: 1603")
+        };
+        add_failure_notice(&mut notices, &upgrade("Spotify"), &no_log);
+        assert_eq!(notices.len(), 3);
+        assert!(notices[2].advice.contains("Häufig läuft das Programm noch"));
+
+        // Klappt ein Update später, verschwindet seine Zeile; eine leere
+        // Meldung ganz.
+        forget_failures(&mut notices, "ArtCraft.PdfCraft");
+        assert_eq!(notices.iter().map(|n| n.failures.len()).sum::<usize>(), 3);
+        assert!(notices.iter().any(|n| {
+            n.title
+                .starts_with("WordCraft aktualisieren fehlgeschlagen")
+        }));
+        forget_failures(&mut notices, "ArtCraft.Zoom");
+        assert_eq!(notices.len(), 2);
     }
 }
