@@ -1606,10 +1606,12 @@ impl WpmApp {
                             );
                         }
                         // Viele gleiche Fehler (z. B. ohne Internet) sollen das
-                        // Fenster nicht füllen: dann wird die Liste scrollbar.
+                        // Fenster nicht füllen: dann wird die Liste scrollbar –
+                        // mit sichtbarem Balken, damit man weitere Zeilen bemerkt.
+                        ui.spacing_mut().scroll = egui::style::ScrollStyle::thin();
                         egui::ScrollArea::vertical()
                             .id_salt(("failure_rows", index))
-                            .max_height(160.0)
+                            .max_height(220.0)
                             .auto_shrink([false, true])
                             .show(ui, |ui| {
                         for item in &notice.failures {
